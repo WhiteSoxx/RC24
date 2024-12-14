@@ -1,14 +1,30 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
+#include <stdlib.h>
+#include <sys/types.h>
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
+#include <netdb.h>
 
 #define GN 54
+
+
+int fd, errcode;
+ssize_t n;
+socklen_t addrlen;
+struct addrinfo hints, *res;
+struct sockaddr_in addr;
+char buffer[1024];
+int gamestate = 0;
 
 int main(int argc, char *argv[])
 {
     int i;
     char *GSIP = "localhost";
-    int GSPort = 58000+GN;
+    char GSPort[] = "50054";
 
     for(i = 0; i < argc; i++)
     {
@@ -19,23 +35,24 @@ int main(int argc, char *argv[])
         }
         else if(!strcmp(argv[i], "-p"))
         {
-            GSPort = atoi(argv[i+1]);
+            strcpy(GSPort, argv[i+1]);
             i++;
         }
     }
 
     printf("GSIP: %s\n", GSIP);
-    printf("GSPort: %d\n", GSPort);
+    printf("GSPort: %s\n", GSPort);
 
-    int PLID = -1;
-    int max_playtime = -1;
+    char PLID[6] = "";
+    char max_playtime[3] = "";
     char *key[4];
 
-    char buffer[1024];
-    while(fgets(buffer, sizeof(buffer), stdin) != NULL)
+    char cmd_buffer[1024] = "";
+    char msg_buffer[1024] = "";
+    while(fgets(cmd_buffer, sizeof(cmd_buffer), stdin) != NULL)
     {
-        buffer[strcspn(buffer, "\n")] = 0;
-        char *token = strtok(buffer, " ");
+        cmd_buffer[strcspn(cmd_buffer, "\n")] = 0;
+        char *token = strtok(cmd_buffer, " ");
         char* command[1024];
         command[0] = token;
 
@@ -55,8 +72,30 @@ int main(int argc, char *argv[])
         }
         else if(!strcmp(command[0], "start"))
         {
-            PLID = atoi(command[1]);
-            max_playtime = atoi(command[2]);
+            strcpy(PLID, command[1]);
+            strcpy(max_playtime, command[2]);
+
+            fd = socket(AF_INET, SOCK_DGRAM, 0);
+            if(fd == -1) exit(1);
+
+            memset(&hints, 0, sizeof hints);
+            hints.ai_family = AF_INET;
+            hints.ai_socktype = SOCK_DGRAM;
+
+            errcode = getaddrinfo(GSIP, GSPort, &hints, &res);
+            if(errcode != 0) exit(1);
+
+            
+
+            strcat(msg_buffer, "SNG ");
+            strcat(msg_buffer, PLID);
+            strcat(msg_buffer, " ");
+            strcat(msg_buffer, max_playtime);
+            strcat(msg_buffer, "\n");
+            n = sendto(fd, msg_buffer, strlen(msg_buffer), 0, res->ai_addr, res->ai_addrlen);
+            if(n == -1) exit(1);
+
+
             printf("start!\n");
             continue;
         } //FIXME outros comandos só depois do jogo ter começado?
@@ -94,8 +133,8 @@ int main(int argc, char *argv[])
         }
         else if(!strcmp(command[0], "debug"))
         {
-            PLID = atoi(command[1]);
-            max_playtime = atoi(command[2]);
+            strcpy(PLID, command[1]);
+            strcpy(max_playtime, command[2]);
             key[0] = command[3];
             key[1] = command[4];
             key[2] = command[5];
