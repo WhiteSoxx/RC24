@@ -5,4 +5,4 @@ clean:
 	rm -f GS
 
 run: GS
-	./GS -v -p 34
+	./GS -v

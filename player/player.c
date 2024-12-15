@@ -23,14 +23,14 @@ int gamestate = 0;
 int main(int argc, char *argv[])
 {
     int i;
-    char *GSIP = "localhost";
+    char GSIP[] = "localhost";
     char GSPort[] = "50054";
 
     for(i = 0; i < argc; i++)
     {
         if(!strcmp(argv[i], "-n"))
         {
-            GSIP = argv[i+1];
+            strcpy(GSIP, argv[i+1]);
             i++;
         }
         else if(!strcmp(argv[i], "-p"))
@@ -43,12 +43,22 @@ int main(int argc, char *argv[])
     printf("GSIP: %s\n", GSIP);
     printf("GSPort: %s\n", GSPort);
 
+    fd = socket(AF_INET, SOCK_DGRAM, 0);
+    if (fd == -1) exit(1);
+
+    memset(&hints, 0, sizeof hints);
+    hints.ai_family = AF_INET;
+    hints.ai_socktype = SOCK_DGRAM;
+
+    errcode = getaddrinfo("localhost", GSPort, &hints, &res);
+    if (errcode != 0) exit(1);
+
     char PLID[6] = "";
     char max_playtime[3] = "";
     char *key[4];
 
     char cmd_buffer[1024] = "";
-    char msg_buffer[1024] = "";
+    
     while(fgets(cmd_buffer, sizeof(cmd_buffer), stdin) != NULL)
     {
         cmd_buffer[strcspn(cmd_buffer, "\n")] = 0;
@@ -75,25 +85,22 @@ int main(int argc, char *argv[])
             strcpy(PLID, command[1]);
             strcpy(max_playtime, command[2]);
 
-            fd = socket(AF_INET, SOCK_DGRAM, 0);
-            if(fd == -1) exit(1);
-
-            memset(&hints, 0, sizeof hints);
-            hints.ai_family = AF_INET;
-            hints.ai_socktype = SOCK_DGRAM;
-
-            errcode = getaddrinfo(GSIP, GSPort, &hints, &res);
-            if(errcode != 0) exit(1);
-
-            
-
+            char msg_buffer[15] = "";
             strcat(msg_buffer, "SNG ");
             strcat(msg_buffer, PLID);
             strcat(msg_buffer, " ");
             strcat(msg_buffer, max_playtime);
             strcat(msg_buffer, "\n");
-            n = sendto(fd, msg_buffer, strlen(msg_buffer), 0, res->ai_addr, res->ai_addrlen);
-            if(n == -1) exit(1);
+            n = sendto(fd, msg_buffer, 15, 0, res->ai_addr, res->ai_addrlen);
+                if (n == -1) exit(1);
+
+
+            addrlen = sizeof(addr);
+            n = recvfrom(fd, buffer, 128, 0, (struct sockaddr *)&addr, &addrlen);
+            if (n == -1) exit(1);
+
+            write(1, "echo: ", 6);
+            write(1, buffer, n);
 
 
             printf("start!\n");
@@ -128,6 +135,8 @@ int main(int argc, char *argv[])
         }
         else if(!strcmp(command[0], "exit"))
         {
+            freeaddrinfo(res);
+            close(fd);
             printf("exit!\n");
             break;
         }

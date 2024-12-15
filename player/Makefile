@@ -5,4 +5,4 @@ clean:
 	rm -f player
 
 run: GS
-	./player -n GSIP -p 34
+	./player
