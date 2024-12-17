@@ -1,158 +1,176 @@
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
-#include <unistd.h>
-#include <stdlib.h>
-#include <sys/types.h>
-#include <sys/socket.h>
-#include <netinet/in.h>
-#include <arpa/inet.h>
-#include <netdb.h>
-
-#define GN 54
-
+#include "../common.h"
 
 int fd, errcode;
-ssize_t n;
 socklen_t addrlen;
 struct addrinfo hints, *res;
 struct sockaddr_in addr;
-char buffer[1024];
+char buffer[MAX_BUFFER_SIZE];
 int gamestate = 0;
 
-int main(int argc, char *argv[])
-{
-    int i;
-    char GSIP[] = "localhost";
-    char GSPort[] = "50054";
 
-    for(i = 0; i < argc; i++)
-    {
-        if(!strcmp(argv[i], "-n"))
-        {
-            strcpy(GSIP, argv[i+1]);
-            i++;
-        }
-        else if(!strcmp(argv[i], "-p"))
-        {
-            strcpy(GSPort, argv[i+1]);
-            i++;
+void handle_tcp_request(const char *GSIP, const char *GSPort, const char *request, const char *filename) {
+    int tcp_fd;
+    struct addrinfo thints, *tres;
+    char tbuffer[MAX_BUFFER_SIZE];
+
+    memset(&thints, 0, sizeof(thints));
+    thints.ai_family = AF_INET;
+    thints.ai_socktype = SOCK_STREAM;
+
+    if ((errcode = getaddrinfo(GSIP, GSPort, &thints, &tres)) != 0) {
+        fprintf(stderr, "getaddrinfo error: %s\n", gai_strerror(errcode));
+        return;
+    }
+
+    tcp_fd = socket(tres->ai_family, tres->ai_socktype, tres->ai_protocol);
+    if (tcp_fd == -1) {
+        perror("TCP socket failed");
+        freeaddrinfo(tres);
+        return;
+    }
+
+    if (connect(tcp_fd, tres->ai_addr, tres->ai_addrlen) == -1) {
+        perror("Connection to server failed");
+        close(tcp_fd);
+        freeaddrinfo(tres);
+        return;
+    }
+
+    if (send(tcp_fd, request, strlen(request), 0) == -1) {
+        perror("Failed to send TCP request");
+        close(tcp_fd);
+        freeaddrinfo(tres);
+        return;
+    }
+
+    FILE *file = fopen(filename, "w");
+    if (!file) {
+        perror("Failed to open local file for writing");
+        close(tcp_fd);
+        freeaddrinfo(tres);
+        return;
+    }
+
+    int n;
+    while ((n = recv(tcp_fd, tbuffer, sizeof(tbuffer) - 1, 0)) > 0) {
+        tbuffer[n] = '\0';
+        fputs(tbuffer, file); // Write to local file
+        printf("%s", tbuffer); // Print to console
+    }
+
+    if (n < 0) {
+        perror("Failed to receive file data");
+    }
+
+    fclose(file);
+    close(tcp_fd);
+    freeaddrinfo(tres);
+    printf("\nFile '%s' saved successfully.\n", filename);
+}
+
+int main(int argc, char *argv[]) {
+    char GSIP[] = DEFAULT_IP;
+    char GSPort[] = DEFAULT_PORT;
+
+    for(int i = 1; i < argc; i++) {
+        if(strcmp(argv[i], "-n") == 0) {
+            if (i+1 < argc) {
+                strcpy(GSIP, argv[++i]);
+            } else {
+                fprintf(stderr, "Error: Missing argument for -n\n");
+                exit(1);
+            }
+        } else if(strcmp(argv[i], "-p") == 0) {
+            if (i+1 < argc) {
+                strcpy(GSPort, argv[++i]);
+            } else {
+                fprintf(stderr, "Error: Missing argument for -p\n");
+                exit(1);
+            }
         }
     }
 
-    printf("GSIP: %s\n", GSIP);
-    printf("GSPort: %s\n", GSPort);
+    printf("Using GSIP: %s and GSPort: %s\n", GSIP, GSPort);
 
     fd = socket(AF_INET, SOCK_DGRAM, 0);
-    if (fd == -1) exit(1);
+    if (fd == -1) {
+        perror("Socket creation failed");
+        exit(1);
+    }
 
     memset(&hints, 0, sizeof hints);
     hints.ai_family = AF_INET;
     hints.ai_socktype = SOCK_DGRAM;
 
-    errcode = getaddrinfo("localhost", GSPort, &hints, &res);
-    if (errcode != 0) exit(1);
+    errcode = getaddrinfo(GSIP, GSPort, &hints, &res);
+    if (errcode != 0) {
+        fprintf(stderr, "getaddrinfo error: %s\n", gai_strerror(errcode));
+        exit(1);
+    }
 
-    char PLID[6] = "";
-    char max_playtime[3] = "";
-    char *key[4];
+    while(fgets(buffer, sizeof(buffer), stdin) != NULL) {
 
-    char cmd_buffer[1024] = "";
-    
-    while(fgets(cmd_buffer, sizeof(cmd_buffer), stdin) != NULL)
-    {
-        cmd_buffer[strcspn(cmd_buffer, "\n")] = 0;
-        char *token = strtok(cmd_buffer, " ");
-        char* command[1024];
-        command[0] = token;
+        buffer[strcspn(buffer, "\n")] = 0;
+        char *command = strtok(buffer, " ");
 
-        i = 1;
-        token = strtok(NULL, " ");
-        while(token != NULL)
-        {
-            command[i] = token;
-            i++;
-            token = strtok(NULL, " ");
-        }
-
-        if(command[0] == NULL)
-        {
-            printf("command[0] is NULL\n");
+        if (!command) {
+            printf("Please enter a command.\n");
             continue;
         }
-        else if(!strcmp(command[0], "start"))
-        {
-            strcpy(PLID, command[1]);
-            strcpy(max_playtime, command[2]);
 
-            char msg_buffer[15] = "";
-            strcat(msg_buffer, "SNG ");
-            strcat(msg_buffer, PLID);
-            strcat(msg_buffer, " ");
-            strcat(msg_buffer, max_playtime);
-            strcat(msg_buffer, "\n");
-            n = sendto(fd, msg_buffer, 15, 0, res->ai_addr, res->ai_addrlen);
-                if (n == -1) exit(1);
+        if(strcmp(command, "start") == 0) {
 
+            char *PLID = strtok(NULL, " ");
+            char *time = strtok(NULL, " ");
+            if (!PLID || !time) {
+                printf("Invalid start command. Usage: start PLID time\n");
+                continue;
+            }
+            snprintf(buffer, MAX_BUFFER_SIZE, "SNG %s %s\n", PLID, time);
+            printf("Sending: %s", buffer);
+            sendto(fd, buffer, strlen(buffer), 0, res->ai_addr, res->ai_addrlen);
 
-            addrlen = sizeof(addr);
-            n = recvfrom(fd, buffer, 128, 0, (struct sockaddr *)&addr, &addrlen);
-            if (n == -1) exit(1);
+        } else if(strcmp(command, "try") == 0) {
 
-            write(1, "echo: ", 6);
-            write(1, buffer, n);
+            char *C1 = strtok(NULL, " ");
+            char *C2 = strtok(NULL, " ");
+            char *C3 = strtok(NULL, " ");
+            char *C4 = strtok(NULL, " ");
 
+            if (!C1 || !C2 || !C3 || !C4) {
+                printf("Invalid try command. Usage: try C1 C2 C3 C4\n");
+                continue;
+            }
 
-            printf("start!\n");
-            continue;
-        } //FIXME outros comandos só depois do jogo ter começado?
-        else if(!strcmp(command[0], "try"))
-        {
-            key[0] = command[1];
-            key[1] = command[2];
-            key[2] = command[3];
-            key[3] = command[4];
+            snprintf(buffer, MAX_BUFFER_SIZE, "TRY %s %s %s %s\n", C1, C2, C3, C4);
+            printf("Sending: %s", buffer);
+            sendto(fd, buffer, strlen(buffer), 0, res->ai_addr, res->ai_addrlen);
 
-            //FIXME cores só podem ser algumas específicas, verificar aqui? switch case
+        } else if(strcmp(command, "quit") == 0) {
 
-            printf("try!\n");
-            continue;
-        }
-        else if(!strcmp(command[0], "show_trials") || !strcmp(command[0], "st"))
-        {
-            printf("show trials!\n");
-            continue;
-        }
-        else if(!strcmp(command[0], "scoreboard") || !strcmp(command[0], "sb"))
-        {
-            printf("scoreboard!\n");
-            continue;
-        }
-        else if(!strcmp(command[0], "quit"))
-        {
-            printf("quit!\n");
-            continue;
-        }
-        else if(!strcmp(command[0], "exit"))
-        {
+            snprintf(buffer, MAX_BUFFER_SIZE, "QUT\n");
+            printf("Sending: %s", buffer);
+            sendto(fd, buffer, strlen(buffer), 0, res->ai_addr, res->ai_addrlen);
+
+        } else if(strcmp(command, "exit") == 0) {
+
             freeaddrinfo(res);
             close(fd);
-            printf("exit!\n");
-            break;
-        }
-        else if(!strcmp(command[0], "debug"))
-        {
-            strcpy(PLID, command[1]);
-            strcpy(max_playtime, command[2]);
-            key[0] = command[3];
-            key[1] = command[4];
-            key[2] = command[5];
-            key[3] = command[6];
+            printf("Exiting player client\n");
+            exit(0);
 
-            printf("debug!\n");
-            continue;
-        }
+        } else if (strcmp(command, "show_trials") == 0) {
+            
+            handle_tcp_request(GSIP, GSPort, "STR\n", "trials.txt");
 
+        } else if (strcmp(command, "scoreboard") == 0) {
+            
+            handle_tcp_request(GSIP, GSPort, "SSB\n", "scoreboard.txt");
+
+        } else {
+            printf("Unknown command\n");
+        }
     }
+
     return 0;
 }
