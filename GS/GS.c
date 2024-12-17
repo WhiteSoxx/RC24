@@ -1,12 +1,12 @@
 #include "../common.h"
+#include "GS.h"
+#include <time.h>
 
+PlayerGame player_games[MAX_PLAYERS];
 int udp_fd, tcp_fd, errcode;
 socklen_t addrlen;
 char buffer[MAX_BUFFER_SIZE];
 int verbose = 0;
-
-void handle_tcp_connection(int client_fd);
-void handle_udp_commands();
 
 int main(int argc, char *argv[]) {
     char GSPort[] = DEFAULT_PORT;
@@ -97,6 +97,7 @@ int main(int argc, char *argv[]) {
         FD_SET(tcp_fd, &read_fds);
 
         int activity = select(max_fd + 1, &read_fds, NULL, NULL, NULL);
+        
         if (activity < 0) {
             perror("Select error");
             continue;
@@ -133,46 +134,6 @@ int main(int argc, char *argv[]) {
     }
 
     return 0;
-}
-
-void handle_udp_commands() {
-    struct sockaddr_in addr;
-    addrlen = sizeof(addr);
-    int n = recvfrom(udp_fd, buffer, MAX_BUFFER_SIZE, 0, (struct sockaddr *)&addr, &addrlen);
-
-    if (n == -1) {
-        perror("recvfrom failed");
-        return;
-    }
-
-    buffer[n] = '\0';
-
-    if (verbose) {
-        printf("UDP Received from %s:%d: %s", inet_ntoa(addr.sin_addr), ntohs(addr.sin_port), buffer);
-    }
-
-    char *command = strtok(buffer, " ");
-    if (command == NULL) return;
-
-    if (strcmp(command, "SNG") == 0) {
-        char *PLID = strtok(NULL, " ");
-        char *time = strtok(NULL, " ");
-        printf("Start command received with PLID: %s, time: %s\n", PLID, time);
-    } 
-    else if (strcmp(command, "TRY") == 0) {
-        printf("TRY command received\n");
-    } 
-
-    //FIXME
-    else if (strcmp(command, "QUT") == 0) {
-        printf("QUIT command received\n");
-    } 
-    else if (strcmp(command, "DBG") == 0) {
-        printf("DEBUG command received\n");
-    } 
-    else {
-        printf("Unknown UDP command\n");
-    }
 }
 
 void handle_tcp_connection(int client_fd) {
@@ -219,5 +180,154 @@ void handle_tcp_connection(int client_fd) {
     else {
         printf("Unknown TCP request\n");
         send(client_fd, "ERROR\n", 6, 0);
+    }
+}
+
+void handle_udp_commands() {
+    struct sockaddr_in addr;
+    addrlen = sizeof(addr);
+    int n = recvfrom(udp_fd, buffer, MAX_BUFFER_SIZE, 0, (struct sockaddr *)&addr, &addrlen);
+    if (n == -1) {
+        perror("recvfrom failed");
+        return;
+    }
+
+    buffer[n] = '\0';
+    if (verbose) {
+        printf("UDP Received from %s:%d: %s\n", inet_ntoa(addr.sin_addr), ntohs(addr.sin_port), buffer);
+    }
+
+    char *command = strtok(buffer, " ");
+    if (command == NULL) return;
+
+    // Start game command received.
+    if (strcmp(command, "SNG") == 0) {
+
+        char *PLID = strtok(NULL, " ");
+        char *time = strtok(NULL, " ");
+        
+        // Checks if PLID is a 6-digit number, and if playtime does not exceed
+        // maximum duration.
+
+        if (!PLID || strlen(PLID) != 6 || !time || atoi(time) > 600) {
+            sendto(udp_fd, "RSG ERR\n", 8, 0, (struct sockaddr *)&addr, addrlen);
+            return;
+        }
+
+        // Checks if player is already in-game.
+        PlayerGame *game = get_game(PLID);
+        if (game) {
+            sendto(udp_fd, "RSG NOK\n", 8, 0, (struct sockaddr *)&addr, addrlen);
+
+        // Allowed to start game.
+        } else {
+            game = find_or_create_game(PLID);
+            game->remaining_time = atoi(time);
+            generate_secret_key(game->secret_key);
+            sendto(udp_fd, "RSG OK\n", 7, 0, (struct sockaddr *)&addr, addrlen);
+        }
+
+    // Try command
+    } else if (strcmp(command, "TRY") == 0) {
+        char *PLID = strtok(NULL, " ");
+        char *C1 = strtok(NULL, " ");
+        char *C2 = strtok(NULL, " ");
+        char *C3 = strtok(NULL, " ");
+        char *C4 = strtok(NULL, " ");
+
+        PlayerGame *game = get_game(PLID);
+
+        // Checks if PLID has any on-going game.
+        if (!game) {
+            sendto(udp_fd, "RTR NOK\n", 8, 0, (struct sockaddr *)&addr, addrlen);
+            return;
+        }
+
+        char guess[COLOR_SEQUENCE_LEN + 1] = {C1[0], C2[0], C3[0], C4[0], '\0'};
+        int nB, nW;
+        calculate_nB_nW(guess, game->secret_key, &nB, &nW);
+        
+        if (nB == 4) {
+            sendto(udp_fd, "RTR OK 4 0\n", 11, 0, (struct sockaddr *)&addr, addrlen);
+
+            // Terminates game: player wins
+            remove_game(PLID);
+        } else {
+            //FIXME
+            sendto(udp_fd, "RTR OK 2 1\n", 11, 0, (struct sockaddr *)&addr, addrlen);
+        }
+
+    } else if (strcmp(command, "QUT") == 0) {
+        char *PLID = strtok(NULL, " ");
+        PlayerGame *game = get_game(PLID);
+        if (!game) {
+            sendto(udp_fd, "RQT NOK\n", 8, 0, (struct sockaddr *)&addr, addrlen);
+            return;
+        }
+        char msg[64];
+        snprintf(msg, sizeof(msg), "RQT OK %s\n", game->secret_key);
+        sendto(udp_fd, msg, strlen(msg), 0, (struct sockaddr *)&addr, addrlen);
+        remove_game(PLID);
+    }
+}
+/*Generates randomly a secret key from a preset of colors.*/
+void generate_secret_key(char *secret_key) {
+    const char colors[] = {'R', 'G', 'B', 'Y', 'O', 'P'};
+    srand(time(NULL));
+    for (int i = 0; i < COLOR_SEQUENCE_LEN; i++) {
+        secret_key[i] = colors[rand() % 6];
+    }
+    secret_key[COLOR_SEQUENCE_LEN] = '\0';
+}
+
+PlayerGame *find_or_create_game(const char *PLID) {
+    for (int i = 0; i < MAX_PLAYERS; i++) {
+        if (player_games[i].PLID[0] == '\0') {
+            strcpy(player_games[i].PLID, PLID);
+            printf("aaa\n");
+            return &player_games[i];
+
+        }
+    }
+    return NULL;
+}
+
+/*Gets PlayerGame with the given PLID*/
+PlayerGame *get_game(const char *PLID) {
+    for (int i = 0; i < MAX_PLAYERS; i++) {
+        if (strcmp(player_games[i].PLID, PLID) == 0) {
+            return &player_games[i];
+        }
+    }
+    
+    return NULL;
+}
+
+/*Removes game with the given PLID*/
+void remove_game(const char *PLID) {
+    for (int i = 0; i < MAX_PLAYERS; i++) {
+        if (strcmp(player_games[i].PLID, PLID) == 0) {
+            memset(&player_games[i], 0, sizeof(PlayerGame));
+            break;
+        }
+    }
+}
+
+void calculate_nB_nW(const char *guess, const char *secret_key, int *nB, int *nW) {
+    *nB = *nW = 0;
+    int secret_count[6] = {0};
+    int guess_count[6] = {0};
+
+    for (int i = 0; i < 4; i++) {
+        if (guess[i] == secret_key[i]) {
+            (*nB)++;
+        } else {
+            secret_count[secret_key[i] - 'A']++;
+            guess_count[guess[i] - 'A']++;
+        }
+    }
+
+    for (int i = 0; i < 6; i++) {
+        *nW += (secret_count[i] < guess_count[i]) ? secret_count[i] : guess_count[i];
     }
 }
