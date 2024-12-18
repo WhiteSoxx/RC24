@@ -66,9 +66,12 @@ int main(int argc, char *argv[]) {
         if(strcmp(command, "start") == 0) {
             char *PLID = strtok(NULL, " ");
             char *time = strtok(NULL, " ");
-            if (!PLID || !time) {
-                printf("Invalid start command. Usage: start PLID time\n");
-                continue;
+
+            if (!validate_plid(PLID) || !validate_play_time(time)){
+
+                printf("[!] Invalid start command, PLID must be a 6-digit number and time \
+                can not exceed 600 seconds. Usage: start PLID time\n");
+
             }
 
             snprintf(buffer, MAX_BUFFER_SIZE, "SNG %s %s\n", PLID, time);
@@ -77,10 +80,12 @@ int main(int argc, char *argv[]) {
             receive_udp_response();
 
         } else if(strcmp(command, "try") == 0) {
+
             char *C1 = strtok(NULL, " ");
             char *C2 = strtok(NULL, " ");
             char *C3 = strtok(NULL, " ");
             char *C4 = strtok(NULL, " ");
+
             if (!C1 || !C2 || !C3 || !C4) {
                 printf("Invalid try command. Usage: try C1 C2 C3 C4\n");
                 continue;

@@ -1,16 +1,221 @@
 #include "../common.h"
 #include "GS.h"
 #include <time.h>
+#include <stdlib.h>
+#include <signal.h>
 
-PlayerGame player_games[MAX_PLAYERS];
+PlayerGame *player_games = NULL; // Head of the player linked list
+
 int udp_fd, tcp_fd, errcode;
 socklen_t addrlen;
 char buffer[MAX_BUFFER_SIZE];
 int verbose = 0;
 
+// Find player by PLID
+PlayerGame *get_game(const char *PLID) {
+    PlayerGame *current = player_games;
+    while (current != NULL) {
+        if (strcmp(current->PLID, PLID) == 0) {
+            return current;
+        }
+        current = current->next;
+    }
+    return NULL;
+}
+
+// Add or create a player game
+PlayerGame *find_or_create_game(const char *PLID) {
+    PlayerGame *game = get_game(PLID);
+    if (game) return game;
+
+    PlayerGame *new_game = (PlayerGame *)malloc(sizeof(PlayerGame));
+    if (!new_game) {
+        perror("Memory allocation failed");
+        return NULL;
+    }
+
+    strcpy(new_game->PLID, PLID);
+    memset(new_game->secret_key, 0, sizeof(new_game->secret_key));
+    new_game->remaining_time = 0;
+    new_game->trials_left = 0;
+    new_game->current_trial = 0;
+    new_game->next = player_games; // Insert at the head of the list
+    player_games = new_game;
+
+    return new_game;
+}
+
+// Remove player game
+void remove_game(const char *PLID) {
+    PlayerGame *current = player_games;
+    PlayerGame *previous = NULL;
+
+    while (current != NULL) {
+        if (strcmp(current->PLID, PLID) == 0) {
+            if (previous == NULL) {
+                player_games = current->next; // Remove head
+            } else {
+                previous->next = current->next;
+            }
+            free(current); // Free memory
+            return;
+        }
+        previous = current;
+        current = current->next;
+    }
+}
+
+void handle_udp_commands() {
+    struct sockaddr_in addr;
+    addrlen = sizeof(addr);
+
+    memset(buffer, 0, MAX_BUFFER_SIZE);
+
+    int n = recvfrom(udp_fd, buffer, MAX_BUFFER_SIZE, 0, (struct sockaddr *)&addr, &addrlen);
+    if (n == -1) {
+        perror("recvfrom failed");
+        return;
+    }
+    
+    if (verbose) {
+        printf("UDP Received from %s:%d: %s\n", inet_ntoa(addr.sin_addr), ntohs(addr.sin_port), buffer);
+    }
+
+    buffer[n] = '\0';
+    char *command = strtok(buffer, " ");
+    if (command == NULL) return;
+
+    if (strcmp(command, "SNG") == 0) {
+        char *PLID = strtok(NULL, " ");
+        char *time = strtok(NULL, " ");
+
+        if (!validate_plid(PLID) || !validate_play_time(time)) {
+            sendto(udp_fd, "RSG ERR\n", 8, 0, (struct sockaddr *)&addr, addrlen);
+            return;
+        }
+
+        PlayerGame *game = get_game(PLID);
+        if (game) {
+            sendto(udp_fd, "RSG NOK\n", 8, 0, (struct sockaddr *)&addr, addrlen);
+        } else {
+            game = find_or_create_game(PLID);
+            game->remaining_time = atoi(time);
+            generate_secret_key(game->secret_key);
+            sendto(udp_fd, "RSG OK\n", 7, 0, (struct sockaddr *)&addr, addrlen);
+        }
+
+    } else if (strcmp(command, "TRY") == 0) {
+        char *PLID = strtok(NULL, " ");
+        char *C1 = strtok(NULL, " ");
+        char *C2 = strtok(NULL, " ");
+        char *C3 = strtok(NULL, " ");
+        char *C4 = strtok(NULL, " ");
+
+        if (!validate_plid(PLID) || !validate_color_sequence(C1, C2, C3, C4)) {
+            sendto(udp_fd, "RTR ERR\n", 8, 0, (struct sockaddr *)&addr, addrlen);
+            return;
+        }
+
+        PlayerGame *game = get_game(PLID);
+        if (!game) {
+            sendto(udp_fd, "RTR NOK\n", 8, 0, (struct sockaddr *)&addr, addrlen);
+            return;
+        }
+
+        char guess[COLOR_SEQUENCE_LEN + 1] = {C1[0], C2[0], C3[0], C4[0], '\0'};
+        int nB, nW;
+        calculate_nB_nW(guess, game->secret_key, &nB, &nW);
+
+        if (nB == 4) {
+            sendto(udp_fd, "RTR OK 4 0\n", 11, 0, (struct sockaddr *)&addr, addrlen);
+            remove_game(PLID);
+        } else {
+            sendto(udp_fd, "RTR OK 2 1\n", 11, 0, (struct sockaddr *)&addr, addrlen);
+        }
+    }
+}
+
+void handle_tcp_connection(int client_fd) {
+
+    char buffer[MAX_BUFFER_SIZE];
+    int n = recv(client_fd, buffer, sizeof(buffer), 0);
+    if (n <= 0) {
+        if (n < 0) perror("recv failed");
+        return;
+    }
+
+    buffer[n] = '\0';
+    printf("TCP request: %s\n", buffer);
+
+    if (strncmp(buffer, "STR", 3) == 0) {
+        printf("Execute show trials protocol\n");
+        FILE *file = fopen("trials.txt", "r");
+        if (!file) {
+            perror("Failed to open trials file");
+            send(client_fd, "ERROR\n", 6, 0);
+            return;
+        }
+
+        while (fgets(buffer, MAX_BUFFER_SIZE, file)) {
+            send(client_fd, buffer, strlen(buffer), 0);
+        }
+
+        fclose(file);
+    } 
+    else if (strncmp(buffer, "SSB", 3) == 0) {
+
+        printf("Execute Scoreboard protocol\n");
+        FILE *file = fopen("scoreboard.txt", "r");
+        if (!file) {
+            perror("Failed to open scoreboard file");
+            send(client_fd, "ERROR\n", 6, 0);
+            return;
+        }
+
+        while (fgets(buffer, MAX_BUFFER_SIZE, file)) {
+            send(client_fd, buffer, strlen(buffer), 0);
+        }
+
+        fclose(file);
+    } 
+    else {
+        printf("Unknown TCP request\n");
+        send(client_fd, "ERROR\n", 6, 0);
+    }
+}
+
+/*Generates randomly a secret key from a preset of colors.*/
+void generate_secret_key(char *secret_key) {
+    const char colors[] = {'R', 'G', 'B', 'Y', 'O', 'P'};
+    srand(time(NULL));
+    for (int i = 0; i < COLOR_SEQUENCE_LEN; i++) {
+        secret_key[i] = colors[rand() % 6];
+    }
+    secret_key[COLOR_SEQUENCE_LEN] = '\0';
+}
+
+void calculate_nB_nW(const char *guess, const char *secret_key, int *nB, int *nW) {
+    *nB = *nW = 0;
+    int secret_count[6] = {0};
+    int guess_count[6] = {0};
+
+    for (int i = 0; i < 4; i++) {
+        if (guess[i] == secret_key[i]) {
+            (*nB)++;
+        } else {
+            secret_count[secret_key[i] - 'A']++;
+            guess_count[guess[i] - 'A']++;
+        }
+    }
+
+    for (int i = 0; i < 6; i++) {
+        *nW += (secret_count[i] < guess_count[i]) ? secret_count[i] : guess_count[i];
+    }
+}
+
 int main(int argc, char *argv[]) {
     char GSPort[] = DEFAULT_PORT;
-    int yes = 1;
+    signal(SIGINT, cleanup_and_exit);
 
     // FIXME: Possible segmentation fault.
     for (int i = 1; i < argc; i++) {
@@ -42,6 +247,13 @@ int main(int argc, char *argv[]) {
         exit(1);
     }
 
+    // Enable SO_REUSEADDR to reuse the port immediately after closing
+    int yes = 1;
+    if (setsockopt(udp_fd, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(int)) == -1) {
+        perror("setsockopt failed");
+        exit(1);
+    }
+
     if (bind(udp_fd, res_udp->ai_addr, res_udp->ai_addrlen) == -1) {
         perror("UDP bind failed");
         close(udp_fd);
@@ -68,6 +280,11 @@ int main(int argc, char *argv[]) {
     if (tcp_fd == -1) {
         perror("TCP socket creation failed");
         freeaddrinfo(res_tcp);
+        exit(1);
+    }
+
+    if (setsockopt(tcp_fd, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(int)) == -1) {
+        perror("setsockopt failed");
         exit(1);
     }
 
@@ -136,198 +353,22 @@ int main(int argc, char *argv[]) {
     return 0;
 }
 
-void handle_tcp_connection(int client_fd) {
-    char buffer[MAX_BUFFER_SIZE];
-    int n = recv(client_fd, buffer, sizeof(buffer), 0);
-    if (n <= 0) {
-        if (n < 0) perror("recv failed");
-        return;
+
+void cleanup_and_exit(int signum) {
+    printf("\nShutting down server gracefully...\n");
+
+    // Close UDP and TCP file descriptors
+    if (udp_fd > 0) close(udp_fd);
+    if (tcp_fd > 0) close(tcp_fd);
+
+    // Free the linked list of PlayerGame
+    PlayerGame *current = player_games;
+    while (current != NULL) {
+        PlayerGame *next = current->next;
+        free(current);
+        current = next;
     }
 
-    buffer[n] = '\0';
-    printf("TCP request: %s\n", buffer);
-
-    if (strncmp(buffer, "STR", 3) == 0) {
-        printf("Execute show trials protocol\n");
-        FILE *file = fopen("trials.txt", "r");
-        if (!file) {
-            perror("Failed to open trials file");
-            send(client_fd, "ERROR\n", 6, 0);
-            return;
-        }
-
-        while (fgets(buffer, MAX_BUFFER_SIZE, file)) {
-            send(client_fd, buffer, strlen(buffer), 0);
-        }
-
-        fclose(file);
-    } 
-    else if (strncmp(buffer, "SSB", 3) == 0) {
-        printf("Execute Scoreboard protocol\n");
-        FILE *file = fopen("scoreboard.txt", "r");
-        if (!file) {
-            perror("Failed to open scoreboard file");
-            send(client_fd, "ERROR\n", 6, 0);
-            return;
-        }
-
-        while (fgets(buffer, MAX_BUFFER_SIZE, file)) {
-            send(client_fd, buffer, strlen(buffer), 0);
-        }
-
-        fclose(file);
-    } 
-    else {
-        printf("Unknown TCP request\n");
-        send(client_fd, "ERROR\n", 6, 0);
-    }
-}
-
-void handle_udp_commands() {
-    struct sockaddr_in addr;
-    addrlen = sizeof(addr);
-    int n = recvfrom(udp_fd, buffer, MAX_BUFFER_SIZE, 0, (struct sockaddr *)&addr, &addrlen);
-    if (n == -1) {
-        perror("recvfrom failed");
-        return;
-    }
-
-    buffer[n] = '\0';
-    if (verbose) {
-        printf("UDP Received from %s:%d: %s\n", inet_ntoa(addr.sin_addr), ntohs(addr.sin_port), buffer);
-    }
-
-    char *command = strtok(buffer, " ");
-    if (command == NULL) return;
-
-    // Start game command received.
-    if (strcmp(command, "SNG") == 0) {
-
-        char *PLID = strtok(NULL, " ");
-        char *time = strtok(NULL, " ");
-        
-        // Checks if PLID is a 6-digit number, and if playtime does not exceed
-        // maximum duration.
-
-        if (!PLID || strlen(PLID) != 6 || !time || atoi(time) > 600) {
-            sendto(udp_fd, "RSG ERR\n", 8, 0, (struct sockaddr *)&addr, addrlen);
-            return;
-        }
-
-        // Checks if player is already in-game.
-        PlayerGame *game = get_game(PLID);
-        if (game) {
-            sendto(udp_fd, "RSG NOK\n", 8, 0, (struct sockaddr *)&addr, addrlen);
-
-        // Allowed to start game.
-        } else {
-            game = find_or_create_game(PLID);
-            game->remaining_time = atoi(time);
-            generate_secret_key(game->secret_key);
-            sendto(udp_fd, "RSG OK\n", 7, 0, (struct sockaddr *)&addr, addrlen);
-        }
-
-    // Try command
-    } else if (strcmp(command, "TRY") == 0) {
-        char *PLID = strtok(NULL, " ");
-        char *C1 = strtok(NULL, " ");
-        char *C2 = strtok(NULL, " ");
-        char *C3 = strtok(NULL, " ");
-        char *C4 = strtok(NULL, " ");
-
-        PlayerGame *game = get_game(PLID);
-
-        // Checks if PLID has any on-going game.
-        if (!game) {
-            sendto(udp_fd, "RTR NOK\n", 8, 0, (struct sockaddr *)&addr, addrlen);
-            return;
-        }
-
-        char guess[COLOR_SEQUENCE_LEN + 1] = {C1[0], C2[0], C3[0], C4[0], '\0'};
-        int nB, nW;
-        calculate_nB_nW(guess, game->secret_key, &nB, &nW);
-        
-        if (nB == 4) {
-            sendto(udp_fd, "RTR OK 4 0\n", 11, 0, (struct sockaddr *)&addr, addrlen);
-
-            // Terminates game: player wins
-            remove_game(PLID);
-        } else {
-            //FIXME
-            sendto(udp_fd, "RTR OK 2 1\n", 11, 0, (struct sockaddr *)&addr, addrlen);
-        }
-
-    } else if (strcmp(command, "QUT") == 0) {
-        char *PLID = strtok(NULL, " ");
-        PlayerGame *game = get_game(PLID);
-        if (!game) {
-            sendto(udp_fd, "RQT NOK\n", 8, 0, (struct sockaddr *)&addr, addrlen);
-            return;
-        }
-        char msg[64];
-        snprintf(msg, sizeof(msg), "RQT OK %s\n", game->secret_key);
-        sendto(udp_fd, msg, strlen(msg), 0, (struct sockaddr *)&addr, addrlen);
-        remove_game(PLID);
-    }
-}
-/*Generates randomly a secret key from a preset of colors.*/
-void generate_secret_key(char *secret_key) {
-    const char colors[] = {'R', 'G', 'B', 'Y', 'O', 'P'};
-    srand(time(NULL));
-    for (int i = 0; i < COLOR_SEQUENCE_LEN; i++) {
-        secret_key[i] = colors[rand() % 6];
-    }
-    secret_key[COLOR_SEQUENCE_LEN] = '\0';
-}
-
-PlayerGame *find_or_create_game(const char *PLID) {
-    for (int i = 0; i < MAX_PLAYERS; i++) {
-        if (player_games[i].PLID[0] == '\0') {
-            strcpy(player_games[i].PLID, PLID);
-            printf("aaa\n");
-            return &player_games[i];
-
-        }
-    }
-    return NULL;
-}
-
-/*Gets PlayerGame with the given PLID*/
-PlayerGame *get_game(const char *PLID) {
-    for (int i = 0; i < MAX_PLAYERS; i++) {
-        if (strcmp(player_games[i].PLID, PLID) == 0) {
-            return &player_games[i];
-        }
-    }
-    
-    return NULL;
-}
-
-/*Removes game with the given PLID*/
-void remove_game(const char *PLID) {
-    for (int i = 0; i < MAX_PLAYERS; i++) {
-        if (strcmp(player_games[i].PLID, PLID) == 0) {
-            memset(&player_games[i], 0, sizeof(PlayerGame));
-            break;
-        }
-    }
-}
-
-void calculate_nB_nW(const char *guess, const char *secret_key, int *nB, int *nW) {
-    *nB = *nW = 0;
-    int secret_count[6] = {0};
-    int guess_count[6] = {0};
-
-    for (int i = 0; i < 4; i++) {
-        if (guess[i] == secret_key[i]) {
-            (*nB)++;
-        } else {
-            secret_count[secret_key[i] - 'A']++;
-            guess_count[guess[i] - 'A']++;
-        }
-    }
-
-    for (int i = 0; i < 6; i++) {
-        *nW += (secret_count[i] < guess_count[i]) ? secret_count[i] : guess_count[i];
-    }
+    printf("Resources cleaned up successfully. Exiting.\n");
+    exit(0);
 }
