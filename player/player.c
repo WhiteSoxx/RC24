@@ -22,10 +22,6 @@ void handle_start_command(const char *PLID, const char *time) {
     // Copy PLID to currentPLID
     strncpy(currentPLID, PLID, sizeof(currentPLID) - 1);
     currentPLID[sizeof(currentPLID) - 1] = '\0';
-
-    printf("First PLID: %s\n", currentPLID);
-    printf("time: %s\n", time);
-
     snprintf(buffer, MAX_BUFFER_SIZE, "SNG %s %s\n", currentPLID, time);
     printf("(->) Sending: %s", buffer);
 
@@ -73,7 +69,7 @@ void handle_try_command(const char *C1, const char *C2, const char *C3, const ch
     if (strncmp(response, "RTR OK", 6) == 0){
         int trial, nB,nW;
         sscanf(response, "RTR OK %d %d %d", &trial, &nB, &nW);
-        printf("[+] Trial %d: %d blacks, %d whites\n", trial, nB, nW);
+        printf("[+] TRIAL %d: nB = %d, nW = %d\n", trial, nB, nW);
         trial_number++;
     }
     

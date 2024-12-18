@@ -40,6 +40,7 @@ PlayerGame *find_or_create_game(const char *PLID) {
     new_game->current_trial = 0;
     new_game->expected_trial = 0;
     new_game->next = player_games;
+    new_game->last_update_time = time(NULL);
     player_games = new_game;
 
     return new_game;
@@ -51,19 +52,22 @@ void remove_game(const char *PLID) {
     PlayerGame *previous = NULL;
 
     while (current != NULL) {
+        printf("%s, %s\n", current->PLID, PLID);
         if (strcmp(current->PLID, PLID) == 0) {
             if (previous == NULL) {
-                player_games = current->next; // Remove head
+                player_games = current->next; 
             } else {
-                previous->next = current->next;
+                previous->next = current->next; 
             }
-            free(current); // Free memory
+            printf("Freeing game with PLID %s\n", PLID);
+            free(current);
             return;
         }
         previous = current;
         current = current->next;
     }
 }
+
 
 
 /**
@@ -94,22 +98,43 @@ void process_try_command(struct sockaddr_in *addr) {
     int nT = atoi(strtok(NULL, " "));
 
     printf("TRIAL NUMBER: %d\n", nT);
-
-    if (!validate_plid(PLID) || !C1 || !C2 || !C3 || !C4) {
+    
+    if (!validate_plid(PLID) || !validate_color_sequence(C1,C2,C3,C4)) {
         sendto(udp_fd, "RTR ERR\n", 8, 0, (struct sockaddr *)addr, addrlen);
         return;
     }
 
     PlayerGame *game = get_game(PLID);
-
-    printf("[DEBUGGING]: The secret key is: %s\n", game->secret_key);
+    
     if (!game) {
         sendto(udp_fd, "RTR NOK\n", 8, 0, (struct sockaddr *)addr, addrlen);
         return;
     }
 
-    if (game->current_trial >= MAX_TRIALS) {
-        snprintf(buffer, MAX_BUFFER_SIZE, "RTR ENT %s\n", game->secret_key);
+    printf("[DEBUGGING]: The secret key is: %s\n", game->secret_key);
+
+    if (game->current_trial > MAX_TRIALS) {
+        char formatted_key[8];
+        format_secret_key(formatted_key, game->secret_key);
+
+        snprintf(buffer, MAX_BUFFER_SIZE, "RTR ENT %s\n", formatted_key);
+        sendto(udp_fd, buffer, strlen(buffer), 0, (struct sockaddr *)addr, addrlen);
+        remove_game(PLID);
+        return;
+    }
+
+    time_t current_time = time(NULL);
+    int time_elapsed = (int)(current_time - game->last_update_time);
+    game->remaining_time -= time_elapsed;
+    game->last_update_time = current_time;
+    printf("REMAINING TIME: %d\n",game->remaining_time);
+
+    // Time expired.
+    if (game->remaining_time <= 0) {
+        char formatted_key[8];
+        format_secret_key(formatted_key, game->secret_key);
+
+        snprintf(buffer, MAX_BUFFER_SIZE, "RTR ETM %s\n", formatted_key);
         sendto(udp_fd, buffer, strlen(buffer), 0, (struct sockaddr *)addr, addrlen);
         remove_game(PLID);
         return;
@@ -126,7 +151,6 @@ void process_try_command(struct sockaddr_in *addr) {
     int nB, nW;
     calculate_nB_nW(guess, game->secret_key, &nB, &nW);
 
-    
 
     strncpy(game->last_guess, guess, COLOR_SEQUENCE_LEN);
     game->current_trial++;
@@ -225,6 +249,7 @@ void handle_udp_commands() {
         } else {
             game = find_or_create_game(PLID);
             game->remaining_time = atoi(time);
+            printf("Game remaining time: %d\n", game->remaining_time);
             generate_secret_key(game->secret_key);
             sendto(udp_fd, "RSG OK\n", 7, 0, (struct sockaddr *)&addr, addrlen);
         }
@@ -491,6 +516,11 @@ int main(int argc, char *argv[]) {
     return 0;
 }
 
+
+void format_secret_key(char *formatted_key, const char *secret_key) {
+    snprintf(formatted_key, 8, "%c %c %c %c", 
+             secret_key[0], secret_key[1], secret_key[2], secret_key[3]);
+}
 
 void cleanup_and_exit(int signum) {
     printf("\nShutting down server gracefully...\n");
