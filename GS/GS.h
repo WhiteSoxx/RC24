@@ -9,6 +9,8 @@ typedef struct PlayerGame {
     int remaining_time;
     int trials_left;
     int current_trial;
+    char client_ip[INET_ADDRSTRLEN];
+    int client_port;
     struct PlayerGame *next; // Linked list pointer to the next player
 } PlayerGame;
 

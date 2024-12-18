@@ -5,11 +5,13 @@ socklen_t addrlen;
 struct addrinfo hints, *res;
 struct sockaddr_in addr;
 char buffer[MAX_BUFFER_SIZE];
+
+int playerID;
 int gamestate = 0;
-int trial_number = 1; // Keeps track of the current trial number for the current game
+int trial_number = 1; 
 
 void handle_tcp_request(const char *GSIP, const char *GSPort, const char *request, const char *filename);
-void receive_udp_response();
+char* receive_udp_response();
 
 int main(int argc, char *argv[]) {
     char GSIP[] = DEFAULT_IP;
@@ -67,17 +69,17 @@ int main(int argc, char *argv[]) {
             char *PLID = strtok(NULL, " ");
             char *time = strtok(NULL, " ");
 
-            if (!validate_plid(PLID) || !validate_play_time(time)){
-
-                printf("[!] Invalid start command, PLID must be a 6-digit number and time \
-                can not exceed 600 seconds. Usage: start PLID time\n");
-
+            if (!validate_plid(PLID)){
+                printf("[!] Invalid start command, PLID must be a 6-digit number.\n");
+                continue;
             }
-
+            
             snprintf(buffer, MAX_BUFFER_SIZE, "SNG %s %s\n", PLID, time);
-            printf("Sending: %s", buffer);
+            printf("(->) Sending: %s", buffer);
             sendto(fd, buffer, strlen(buffer), 0, res->ai_addr, res->ai_addrlen);
-            receive_udp_response();
+            char *response = receive_udp_response();
+            printf("(<-) Server Response: %s\n", response);
+            free(response);
 
         } else if(strcmp(command, "try") == 0) {
 
@@ -92,9 +94,11 @@ int main(int argc, char *argv[]) {
             }
 
             snprintf(buffer, MAX_BUFFER_SIZE, "TRY %s %s %s %s %d\n", C1, C2, C3, C4, trial_number++);
-            printf("Sending: %s", buffer);
+            printf("(->) Sending: %s", buffer);
             sendto(fd, buffer, strlen(buffer), 0, res->ai_addr, res->ai_addrlen);
-            receive_udp_response();
+            char* response = receive_udp_response();
+            printf("(<-) Server Response: %s\n", response);
+            free(response);
 
         } else if(strcmp(command, "quit") == 0) {
             char *PLID = strtok(NULL, " ");
@@ -122,18 +126,24 @@ int main(int argc, char *argv[]) {
     return 0;
 }
 
-void receive_udp_response() {
+char* receive_udp_response() {
     struct sockaddr_in server_addr;
     socklen_t addr_len = sizeof(server_addr);
-    char response[MAX_BUFFER_SIZE];
-    int n = recvfrom(fd, response, sizeof(response) - 1, 0, (struct sockaddr *)&server_addr, &addr_len);
+    char *response = malloc(MAX_BUFFER_SIZE);
+    if (!response) {
+        perror("Failed to allocate memory for response");
+        exit(1);
+    }
+    
+    int n = recvfrom(fd, response, MAX_BUFFER_SIZE - 1, 0, (struct sockaddr *)&server_addr, &addr_len);
     if (n == -1) {
         perror("recvfrom failed");
-        return;
+        free(response);
+        return NULL;
     }
 
     response[n] = '\0';
-    printf("Server Response: %s\n", response);
+    return response;
 }
 
 void handle_tcp_request(const char *GSIP, const char *GSPort, const char *request, const char *filename) {
