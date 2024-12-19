@@ -19,6 +19,7 @@ void handle_tcp_request(const char *GSIP, const char *GSPort, const char *reques
 char* receive_udp_response();
 
 void handle_start_command(const char *PLID, const char *time) {
+    
     if (!validate_plid(PLID)) {
         printf("[!] Invalid start command, PLID must be a 6-digit number.\n");
         return;
@@ -182,7 +183,7 @@ void handle_quit_command() {
         printf("[!] Error processing the request. Try again.\n");
 
     } else {
-        printf("[!] No response from server.\n");
+        printf("[!] Error: Unable to do this operation.\n");
     }
     
     free(response);

@@ -3,6 +3,8 @@
 #include <time.h>
 #include <stdlib.h>
 #include <signal.h>
+#include <sys/stat.h>
+#include <sys/types.h>
 
 PlayerGame *player_games = NULL; // Head of the player linked list
 
@@ -39,13 +41,66 @@ PlayerGame *find_or_create_game(const char *PLID) {
     new_game->current_trial = 1;
     new_game->expected_trial = 1;
     new_game->next = player_games;
+    new_game->elapsed_time = 0;
+    new_game->start_time = time(NULL);
     new_game->last_update_time = time(NULL);
     player_games = new_game;
 
     return new_game;
 }
 
-void remove_game(const char *PLID) {
+void end_game_file(const char *PLID, const char *status, time_t start_time) {
+    char filename[64];
+    snprintf(filename, sizeof(filename), "GAMES/%s.txt", PLID);
+
+    FILE *file = fopen(filename, "a");
+    if (!file) {
+        perror("Failed to open game file for final update");
+        return;
+    }
+
+    time_t now = time(NULL);
+    int game_duration = (int)(now - start_time);
+    struct tm *t = localtime(&now);
+
+    char end_date[11];
+    char end_time[9];
+    strftime(end_date, sizeof(end_date), "%Y-%m-%d", t);
+    strftime(end_time, sizeof(end_time), "%H:%M:%S", t);
+
+
+    fprintf(file, "%s %s %d\n", end_date, end_time, game_duration);
+    fclose(file);
+
+
+    // Create the GAMES/PLID directory if it doesn't exist
+    char player_dir[64];
+    snprintf(player_dir, sizeof(player_dir), "GAMES/%s", PLID);
+
+    struct stat st = {0};
+    if (stat(player_dir, &st) == -1) {
+        if (mkdir(player_dir, 0777) == -1) {
+            perror("Failed to create player directory");
+            return;
+        }
+        printf("[*] Created player directory: %s\n", player_dir);
+    }
+
+    // Rename the file to the format: YYYYMMDD_HHMMSS_(code).txt
+    char new_filename[128];
+    char end_datetime[32];
+    strftime(end_datetime, sizeof(end_datetime), "%Y%m%d %H%M%S", t);
+    snprintf(new_filename, sizeof(new_filename), "GAMES/%s/%s_%s.txt", PLID, end_datetime, status);
+
+    if (rename(filename, new_filename) == -1) {
+        perror("Failed to move and rename game file");
+        return;
+    }
+
+    printf("[*] Game file moved to: %s\n", new_filename);
+}
+
+void remove_game(const char *PLID, const char *status) {
     PlayerGame *current = player_games;
     PlayerGame *previous = NULL;
 
@@ -56,12 +111,46 @@ void remove_game(const char *PLID) {
             } else {
                 previous->next = current->next; 
             }
+
+            end_game_file(PLID,status,current->start_time);
             free(current);
             return;
         }
         previous = current;
         current = current->next;
     }
+}
+
+void create_game_file(const char *PLID, const char *time_str, const char *secret_key, const char *mode){
+    char filename[64];
+    snprintf(filename, sizeof(filename), "GAMES/%s.txt", PLID);
+
+    FILE *file = fopen(filename, "w");
+    if (!file) {
+        perror("Failed to create game file for player");
+        return;
+    }
+
+    time_t now = time(NULL);
+    struct tm *t = localtime(&now);
+    char timestamp[32];
+    strftime(timestamp, sizeof(timestamp), "%Y-%m-%d %H:%M:%S", t);
+    fprintf(file, "%s %s %s %s %s %ld\n", PLID, mode, secret_key, time_str, timestamp, (long)now);
+    fclose(file);
+}
+
+void update_game_file(const char *PLID, const char *guess, int time_elapsed, int nB, int nW){
+    char filename[64];
+    snprintf(filename, sizeof(filename), "GAMES/%s.txt", PLID);
+
+    FILE *file = fopen(filename, "a");
+    if (!file) {
+        perror("Failed to open game file for player");
+        return;
+    }
+
+    fprintf(file, "T: %s %d %d %d\n", guess, nB, nW, time_elapsed);
+    fclose(file);
 }
 
 
@@ -91,6 +180,7 @@ void process_start_command(struct sockaddr_in *addr) {
         game = find_or_create_game(PLID);
         game->remaining_time = atoi(time_str);
         generate_secret_key(game->secret_key);
+        create_game_file(PLID, time_str, game->secret_key,"P");
         sendto(udp_fd, "RSG OK\n", 7, 0, (struct sockaddr *)addr, addrlen);
     }
 }
@@ -126,13 +216,14 @@ void process_try_command(struct sockaddr_in *addr) {
         format_secret_key(formatted_key, game->secret_key);
         snprintf(buffer, MAX_BUFFER_SIZE, "RTR ENT %s\n", formatted_key);
         sendto(udp_fd, buffer, strlen(buffer), 0, (struct sockaddr *)addr, addrlen);
-        remove_game(PLID);
+        remove_game(PLID,FAIL);
         return;
     }
 
     // Handles remaining time
     time_t current_time = time(NULL);
     int time_elapsed = (int)(current_time - game->last_update_time);
+    game->elapsed_time += time_elapsed;
     game->remaining_time -= time_elapsed;
     game->last_update_time = current_time;
 
@@ -142,7 +233,7 @@ void process_try_command(struct sockaddr_in *addr) {
         format_secret_key(formatted_key, game->secret_key);
         snprintf(buffer, MAX_BUFFER_SIZE, "RTR ETM %s\n", formatted_key);
         sendto(udp_fd, buffer, strlen(buffer), 0, (struct sockaddr *)addr, addrlen);
-        remove_game(PLID);
+        remove_game(PLID,TIMEOUT);
         return;
     }
 
@@ -165,19 +256,19 @@ void process_try_command(struct sockaddr_in *addr) {
         return;
     }
 
-    if (game->current_trial >= MAX_TRIALS) {
+    if (game->current_trial >= MAX_TRIALS && nB != 4) {
         snprintf(buffer, MAX_BUFFER_SIZE, "RTR ENT %s\n", game->secret_key);
         sendto(udp_fd, buffer, strlen(buffer), 0, (struct sockaddr *)addr, addrlen);
-        remove_game(PLID);
+        remove_game(PLID, FAIL);
     
     } else {
-
         strncpy(game->last_guess, guess, COLOR_SEQUENCE_LEN);
+        update_game_file(PLID, guess, game->elapsed_time, nB, nW);
         snprintf(buffer, MAX_BUFFER_SIZE, "RTR OK %d %d %d\n", game->current_trial, nB, nW);
         sendto(udp_fd, buffer, strlen(buffer), 0, (struct sockaddr *)addr, addrlen);
 
         if (nB == 4){
-            remove_game(PLID);
+            remove_game(PLID, WIN);
             return;
         }
 
@@ -185,14 +276,13 @@ void process_try_command(struct sockaddr_in *addr) {
             game->current_trial++;
             game->expected_trial = game->current_trial;
         }
-
     }
 }
 
 /**
  * @brief Handles the "DBG" (debug) command from a player.
  */
-void handle_debug_command(struct sockaddr_in *addr) {
+void process_debug_command(struct sockaddr_in *addr) {
     char PLID[7], time_str[16], C1[2], C2[2], C3[2], C4[2];
 
     int scanned = sscanf(buffer, "DBG %6s %15s %1s %1s %1s %1s", PLID, time_str, C1, C2, C3, C4);
@@ -213,6 +303,7 @@ void handle_debug_command(struct sockaddr_in *addr) {
         game = find_or_create_game(PLID);
         game->remaining_time = atoi(time_str);
         snprintf(game->secret_key, COLOR_SEQUENCE_LEN + 1, "%s%s%s%s", C1, C2, C3, C4);
+        create_game_file(PLID, time_str, game->secret_key,"D");
         sendto(udp_fd, "RDB OK\n", 7, 0, (struct sockaddr *)addr, addrlen);
     }
 }
@@ -236,13 +327,75 @@ void process_quit_command(struct sockaddr_in *addr) {
         format_secret_key(formatted_key, game->secret_key);
         snprintf(buffer, MAX_BUFFER_SIZE, "RQT OK %s\n", formatted_key);
         sendto(udp_fd, buffer, strlen(buffer), 0, (struct sockaddr *)addr, addrlen);
-        remove_game(PLID);
+        remove_game(PLID, QUIT);
     } else {
         sendto(udp_fd, "RQT ERR\n", 8, 0, (struct sockaddr *)addr, addrlen);
         return;
     }
 }
 
+void process_show_trials_command(int client_fd) {
+    char PLID[7];
+    int scanned = sscanf(buffer, "STR %6s", PLID);
+    if (scanned != 1 || !validate_plid(PLID)) {
+        send(client_fd, "RST NOK\n", 8, 0);
+        return;
+    }
+
+    PlayerGame *game = get_game(PLID);
+
+    if (game) {
+        char filename[64];
+        snprintf(filename, sizeof(filename), "trials_%s.txt", PLID);
+        FILE *file = fopen(filename, "w");
+        
+        if (!file) {
+            perror("Failed to create active game file");
+            send(client_fd, "RST NOK\n", 8, 0);
+            return;
+        }
+
+        fprintf(file, "Active game for player %s\n", PLID);
+        fprintf(file, "Remaining Time: %d seconds\n", game->remaining_time);
+        fclose(file);
+
+        send_file_to_client(client_fd, "ACT", filename);
+    /*} else {
+        // Check for the most recent finished game
+        char latest_game_file[64];
+        if (FindLastGame(PLID, latest_game_file)) {
+            send_file_to_client(client_fd, "FIN", latest_game_file);
+        } else {
+            send(client_fd, "RST NOK\n", 8, 0);
+        }*/
+    }
+}
+
+void send_file_to_client(int client_fd, const char *status, const char *filepath) {
+    
+    FILE *file = fopen(filepath, "r");
+    if (!file) {
+        perror("Failed to open file to send");
+        send(client_fd, "RST NOK\n", 8, 0);
+        return;
+    }
+
+    fseek(file, 0, SEEK_END);
+    long filesize = ftell(file);
+    rewind(file);
+
+    char header[MAX_BUFFER_SIZE];
+    snprintf(header, sizeof(header), "RST %s %s %ld\n", status, filepath, filesize);
+    send(client_fd, header, strlen(header), 0);
+
+    char buffer[MAX_BUFFER_SIZE];
+    size_t nread;
+    while ((nread = fread(buffer, 1, sizeof(buffer), file)) > 0) {
+        send(client_fd, buffer, nread, 0);
+    }
+
+    fclose(file);
+}
 
 void handle_udp_commands() {
     struct sockaddr_in addr;
@@ -262,25 +415,20 @@ void handle_udp_commands() {
 
     buffer[n] = '\0';
 
-    // Extract command
     char command[4];
     int cmd_scanned = sscanf(buffer, "%3s", command);
     if (cmd_scanned != 1) return;
 
     if (strcmp(command, "SNG") == 0) {
         process_start_command(&addr);
-
     } else if (strcmp(command, "TRY") == 0) {
         process_try_command(&addr);
-
     } else if (strcmp(command, "DBG") == 0) {
-        handle_debug_command(&addr);
+        process_debug_command(&addr);
     } else if (strcmp(command,"QUT") == 0) {
         process_quit_command(&addr);
     }
 }
-
-
 
 void handle_tcp_connection(int client_fd) {
     char buffer[MAX_BUFFER_SIZE];
