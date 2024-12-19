@@ -160,22 +160,32 @@ void handle_debug_command(const char *PLID, const char *time, const char *C1, co
     free(response);
 }
 
-void handle_quit_command(const char *PLID) {
-    if (!PLID || !validate_plid(PLID)) {
-        printf("Invalid quit command. Usage: quit PLID\n");
-        return;
-    }
-
-    snprintf(buffer, MAX_BUFFER_SIZE, "QUT %s\n", PLID);
+void handle_quit_command() {
+    
+    snprintf(buffer, MAX_BUFFER_SIZE, "QUT %s\n", currentPLID);
     printf("(->) Sending: %s", buffer);
     sendto(fd, buffer, strlen(buffer), 0, res->ai_addr, res->ai_addrlen);
     char *response = receive_udp_response();
-    if (response) {
-        printf("(<-) Server Response: %s\n", response);
-        free(response);
+    printf("(<-) Server Response: %s\n", response);
+
+    if (strncmp(response,"RQT OK", 6)==0) {
+
+        char C1, C2, C3, C4;
+        sscanf(response, "RQT OK %c %c %c %c", &C1, &C2, &C3, &C4);
+        printf("[+] Quit game successfully! The secret key was: %c %c %c %c.\n", C1, C2, C3, C4);
+        reset_player();
+
+    } else if(strncmp(response, "RQT NOK", 7) == 0){
+        printf("[!] There is no game associated with this player.\n");
+    
+    } else if(strncmp(response, "RQT ERR", 7) == 0){
+        printf("[!] Error processing the request. Try again.\n");
+
     } else {
         printf("[!] No response from server.\n");
     }
+    
+    free(response);
 }
 
 int main(int argc, char *argv[]) {
@@ -267,19 +277,20 @@ int main(int argc, char *argv[]) {
             }
 
         } else if (strcmp(cmd, "quit") == 0) {
-            char PLID[7];
-            int count = sscanf(input_line, "%*s %6s", PLID);
-            if (count == 1) {
-                handle_quit_command(PLID);
-            } else {
-                printf("Invalid quit command. Usage: quit PLID\n");
-            }
-
+            handle_quit_command();
         } else if (strcmp(cmd, "exit") == 0) {
+            handle_quit_command();
+
             freeaddrinfo(res);
             close(fd);
-            printf("Exiting player client\n");
+            printf("Exiting player client.\n");
             exit(0);
+
+        } else if (strcmp(cmd, "show_trials") == 0){
+            handle_tcp_request(GSIP, GSPort,"STR\n","trials.txt");
+
+        } else if (strcmp(cmd, "scoreboard") == 0){
+            handle_tcp_request(GSIP, GSPort,"STR\n","scoreboard.txt");
 
         } else {
             printf("Unknown command\n");

@@ -217,6 +217,33 @@ void handle_debug_command(struct sockaddr_in *addr) {
     }
 }
 
+void process_quit_command(struct sockaddr_in *addr) {
+    char PLID[7];
+    sscanf(buffer, "QUT %6s", PLID);
+
+    /*
+    if (!validate_plid(PLID)) {
+        sendto(udp_fd, "RQT ERR\n", 8, 0, (struct sockaddr *)addr, addrlen);
+        return; 
+    }
+    */
+
+    PlayerGame *game = get_game(PLID);
+    if (!game) {
+        sendto(udp_fd, "RQT NOK\n", 8, 0, (struct sockaddr *)addr, addrlen);
+    } else if (game) {
+        char formatted_key[8];
+        format_secret_key(formatted_key, game->secret_key);
+        snprintf(buffer, MAX_BUFFER_SIZE, "RQT OK %s\n", formatted_key);
+        sendto(udp_fd, buffer, strlen(buffer), 0, (struct sockaddr *)addr, addrlen);
+        remove_game(PLID);
+    } else {
+        sendto(udp_fd, "RQT ERR\n", 8, 0, (struct sockaddr *)addr, addrlen);
+        return;
+    }
+}
+
+
 void handle_udp_commands() {
     struct sockaddr_in addr;
     addrlen = sizeof(addr);
@@ -248,8 +275,12 @@ void handle_udp_commands() {
 
     } else if (strcmp(command, "DBG") == 0) {
         handle_debug_command(&addr);
+    } else if (strcmp(command,"QUT") == 0) {
+        process_quit_command(&addr);
     }
 }
+
+
 
 void handle_tcp_connection(int client_fd) {
     char buffer[MAX_BUFFER_SIZE];
