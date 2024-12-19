@@ -1,10 +1,5 @@
 #include "../common.h"
 #include "GS.h"
-#include <time.h>
-#include <stdlib.h>
-#include <signal.h>
-#include <sys/stat.h>
-#include <sys/types.h>
 
 PlayerGame *player_games = NULL; // Head of the player linked list
 
@@ -25,7 +20,7 @@ PlayerGame *get_game(const char *PLID) {
 }
 
 // Add or create a player game
-PlayerGame *find_or_create_game(const char *PLID) {
+PlayerGame *find_or_create_game(const char *PLID, const char *time_str, const char *mode) {
     PlayerGame *game = get_game(PLID);
     if (game) return game;
 
@@ -34,13 +29,16 @@ PlayerGame *find_or_create_game(const char *PLID) {
         perror("Memory allocation failed");
         return NULL;
     }
-
+    
     strcpy(new_game->PLID, PLID);
+    strcpy(new_game->mode, mode);
     memset(new_game->secret_key, 0, sizeof(new_game->secret_key));
+    
     new_game->remaining_time = 0;
     new_game->current_trial = 1;
     new_game->expected_trial = 1;
     new_game->next = player_games;
+    new_game->total_duration = atoi(time_str);
     new_game->elapsed_time = 0;
     new_game->start_time = time(NULL);
     new_game->last_update_time = time(NULL);
@@ -113,6 +111,9 @@ void remove_game(const char *PLID, const char *status) {
             }
 
             end_game_file(PLID,status,current->start_time);
+            printf("TRIAL MODE: %s\n", current->mode);
+            create_score_file(current);
+
             free(current);
             return;
         }
@@ -177,10 +178,10 @@ void process_start_command(struct sockaddr_in *addr) {
     if (game) {
         sendto(udp_fd, "RSG NOK\n", 8, 0, (struct sockaddr *)addr, addrlen);
     } else {
-        game = find_or_create_game(PLID);
+        game = find_or_create_game(PLID, time_str, "PLAY");
         game->remaining_time = atoi(time_str);
         generate_secret_key(game->secret_key);
-        create_game_file(PLID, time_str, game->secret_key,"P");
+        create_game_file(PLID, time_str, game->secret_key,"PLAY");
         sendto(udp_fd, "RSG OK\n", 7, 0, (struct sockaddr *)addr, addrlen);
     }
 }
@@ -203,6 +204,7 @@ void process_try_command(struct sockaddr_in *addr) {
         return;
     }
 
+    printf("PLID: %s\n", PLID);
     PlayerGame *game = get_game(PLID);
     if (!game) {
         sendto(udp_fd, "RTR NOK\n", 8, 0, (struct sockaddr *)addr, addrlen);
@@ -300,10 +302,10 @@ void process_debug_command(struct sockaddr_in *addr) {
     if (game) {
         sendto(udp_fd, "RDB NOK\n", 8, 0, (struct sockaddr *)addr, addrlen);
     } else {
-        game = find_or_create_game(PLID);
+        game = find_or_create_game(PLID, time_str, "DEBUG");
         game->remaining_time = atoi(time_str);
         snprintf(game->secret_key, COLOR_SEQUENCE_LEN + 1, "%s%s%s%s", C1, C2, C3, C4);
-        create_game_file(PLID, time_str, game->secret_key,"D");
+        create_game_file(PLID, time_str, game->secret_key,"DEBUG");
         sendto(udp_fd, "RDB OK\n", 7, 0, (struct sockaddr *)addr, addrlen);
     }
 }
