@@ -7,7 +7,6 @@ typedef struct PlayerGame {
     char PLID[7];
     char secret_key[5];
     int remaining_time;
-    int trials_left;
     int current_trial;
     int expected_trial;
     char last_guess[5]; 

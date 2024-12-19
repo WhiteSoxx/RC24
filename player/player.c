@@ -10,22 +10,32 @@ char currentPLID[7] = "";
 int gamestate = 0;
 int trial_number = 1;
 
+void reset_player(){
+    trial_number = 1;
+    strcpy(currentPLID, "");
+}
+
 void handle_tcp_request(const char *GSIP, const char *GSPort, const char *request, const char *filename);
 char* receive_udp_response();
 
 void handle_start_command(const char *PLID, const char *time) {
-    if (!validate_plid(PLID) || !validate_play_time(time)) {
-        printf("[!] Invalid start command, PLID must be a 6-digit number and time cannot exceed 600 seconds.\n");
+    if (!validate_plid(PLID)) {
+        printf("[!] Invalid start command, PLID must be a 6-digit number.\n");
         return;
     }
 
-    // Copy PLID to currentPLID
-    strncpy(currentPLID, PLID, sizeof(currentPLID) - 1);
-    currentPLID[sizeof(currentPLID) - 1] = '\0';
-    snprintf(buffer, MAX_BUFFER_SIZE, "SNG %s %s\n", currentPLID, time);
+    if(strlen(currentPLID) != 0){
+        printf("[!] You must terminate the current game before starting a new one.\n");
+        return;
+    }
+
+    int time_int = atoi(time);
+
+    strcpy(currentPLID, PLID);
+    
+    snprintf(buffer, MAX_BUFFER_SIZE, "SNG %s %03d\n", currentPLID, time_int);
     printf("(->) Sending: %s", buffer);
 
-    // Send the start request
     sendto(fd, buffer, strlen(buffer), 0, res->ai_addr, res->ai_addrlen);
 
     char *response = receive_udp_response();
@@ -37,15 +47,18 @@ void handle_start_command(const char *PLID, const char *time) {
     printf("(<-) Server Response: %s\n", response);
 
     if (strcmp(response, "RSG OK\n") == 0) {
-        printf("[+] Game started successfully. You can now play!\n");
+        trial_number = 1;
+        printf("[+] Game started successfully. You can now play! You have %d seconds!\n", time_int);
     } else if (strcmp(response, "RSG NOK\n") == 0) {
         printf("[!] A game is already associated with this PLID.\n");
     } else if (strcmp(response, "RSG ERR\n") == 0) {
         printf("[!] Error starting the game. Please check the input and try again.\n");
+        reset_player();
     }
 
     free(response);
 }
+
 
 void handle_try_command(const char *C1, const char *C2, const char *C3, const char *C4) {
     if (strlen(currentPLID) == 0) {
@@ -70,20 +83,60 @@ void handle_try_command(const char *C1, const char *C2, const char *C3, const ch
         int trial, nB,nW;
         sscanf(response, "RTR OK %d %d %d", &trial, &nB, &nW);
         printf("[+] TRIAL %d: nB = %d, nW = %d\n", trial, nB, nW);
+        
+        if(nB == 4){
+            printf("[+] WELL DONE! You guessed the key in %d trials!\n", trial_number);
+            reset_player();
+        }
+
         trial_number++;
+
+    } else if (strncmp(response, "RTR NOK", 7) == 0) {
+        printf("[!] No ongoing game for this player. You need to start a game.\n");
+
+    } else if (strncmp(response, "RTR ERR", 7) == 0) {
+        printf("[!] Error: Syntax incorrect, PLID invalid or color sequence is not valid.\n");
+
+    } else if (strncmp(response, "RTR DUP", 7) == 0) {
+        printf("[!] Duplicate attempt. Try a different combination.\n");
+
+    } else if (strncmp(response, "RTR INV", 7) == 0) {
+        printf("[!] Invalid trial logic. Please try again.\n");
+
+    } else if (strncmp(response, "RTR ENT", 7) == 0) {
+        char C1, C2, C3, C4;
+        sscanf(response, "RTR ENT %c %c %c %c", &C1, &C2, &C3, &C4);
+        printf("[!] Game over! The secret key was: %c %c %c %c\n", C1, C2, C3, C4);
+        reset_player();
+
+    } else if (strncmp(response, "RTR ETM", 7) == 0) {
+        char C1, C2, C3, C4;
+        sscanf(response, "RTR ETM %c %c %c %c", &C1, &C2, &C3, &C4);
+        printf("[!] Time is up! The secret key was: %c %c %c %c\n", C1, C2, C3, C4);
+        reset_player();
+
+    } else {
+        printf("[!] Unrecognized response from the server.\n");
     }
     
     free(response);
 }
 
 void handle_debug_command(const char *PLID, const char *time, const char *C1, const char *C2, const char *C3, const char *C4) {
+    
     if (!validate_plid(PLID) || !time || !C1 || !C2 || !C3 || !C4) {
         printf("Invalid debug command. Usage: debug PLID time C1 C2 C3 C4\n");
         return;
     }
 
+    
+    if(strlen(currentPLID) != 0){
+        printf("[!] You must terminate the game before starting a new one.\n");
+    }
+
+    strcpy(currentPLID, PLID);
+
     snprintf(buffer, MAX_BUFFER_SIZE, "DBG %s %s %s %s %s %s\n", PLID, time, C1, C2, C3, C4);
-    printf("(->) Sending: %s", buffer);
     sendto(fd, buffer, strlen(buffer), 0, res->ai_addr, res->ai_addrlen);
     char* response = receive_udp_response();
     if (!response) {
@@ -91,6 +144,18 @@ void handle_debug_command(const char *PLID, const char *time, const char *C1, co
         return;
     }
 
+    if (strcmp(response, "RDB OK\n") == 0) {
+        int time_int = atoi(time);
+        trial_number = 1;
+        printf("[+] Debug Game started successfully. You have %d seconds!\n", time_int);
+
+    } else if(strcmp(response, "RDB NOK\n") == 0){
+        printf("[!] This player ID already has a game running!\n");
+
+    } else if (strcmp(response, "RDB ERR\n") == 0) {
+        printf("[!] Error: PLID, color sequence or time not valid!\n");
+        reset_player();
+    }
     printf("(<-) Server Response: %s\n", response);
     free(response);
 }
@@ -192,7 +257,6 @@ int main(int argc, char *argv[]) {
             } else {
                 printf("Invalid try command. Usage: try C1 C2 C3 C4\n");
             }
-
         } else if (strcmp(cmd, "debug") == 0) {
             char PLID[7], time_str[16], C1[2], C2[2], C3[2], C4[2];
             int count = sscanf(input_line, "%*s %6s %15s %1s %1s %1s %1s", PLID, time_str, C1, C2, C3, C4);
@@ -305,3 +369,4 @@ void handle_tcp_request(const char *GSIP, const char *GSPort, const char *reques
     freeaddrinfo(tres);
     printf("\nFile '%s' saved successfully.\n", filename);
 }
+
