@@ -27,8 +27,16 @@ void create_score_file(PlayerGame *game) {
         return;
     }
 
+    char mode[16];
+    if(!strcmp(game->mode, "D")) {
+        strcpy(mode, "DEBUG");
+    }
+    else {
+        strcpy(mode, "PLAY");
+    }
+
     // Write the score information to the file
-    fprintf(file, "%03d %s %s %d %s\n", score, game->PLID, game->secret_key, game->current_trial, game->mode);
+    fprintf(file, "%03d %s %s %d %s", score, game->PLID, game->secret_key, game->current_trial, mode);
     fclose(file);
 
     printf("[*] Score file created: %s\n", filename);
@@ -111,6 +119,13 @@ ScoreEntry* load_scores(int *count) {
                 strncpy(entry->PLID, PLID, 6); entry->PLID[6] = '\0';
                 strncpy(entry->secret_key, CCCC, 4); entry->secret_key[4] = '\0';
                 entry->total_plays = N;
+                if(!strcmp(mode, "D")) {
+                    strcpy(entry->mode, "DEBUG");
+                }
+                else {
+                    strcpy(entry->mode, "PLAY");
+                }
+
             }
         }
 

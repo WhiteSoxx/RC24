@@ -40,6 +40,7 @@ typedef struct {
     char PLID[7];
     char secret_key[5];
     int total_plays;
+    char mode[16];
 } ScoreEntry;
 
 void handle_udp_commands();

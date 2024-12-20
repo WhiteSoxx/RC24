@@ -543,7 +543,7 @@ void handle_scoreboard_command(const char *GSIP, const char *GSPort) {
         while (fgets(tbuffer, sizeof(tbuffer), read_file)) {
             printf("%s", tbuffer);
         }
-        printf("=========================\n");
+        printf("\n=========================\n");
         fclose(read_file);
 
     } else {

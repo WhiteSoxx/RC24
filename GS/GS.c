@@ -49,7 +49,7 @@ PlayerGame *find_or_create_game(const char *PLID, const char *time_str, const ch
 
 void end_game_file(const char *PLID, const char *status, time_t start_time) {
     char filename[64];
-    snprintf(filename, sizeof(filename), "GAMES/%s.txt", PLID);
+    snprintf(filename, sizeof(filename), "GAMES/GAME_%s.txt", PLID);
 
     FILE *file = fopen(filename, "a");
     if (!file) {
@@ -66,7 +66,7 @@ void end_game_file(const char *PLID, const char *status, time_t start_time) {
     strftime(end_date, sizeof(end_date), "%Y-%m-%d", t);
     strftime(end_time, sizeof(end_time), "%H:%M:%S", t);
 
-    fprintf(file, "%s %s %d\n", end_date, end_time, game_duration);
+    fprintf(file, "%s %s %d", end_date, end_time, game_duration);
     fclose(file);
 
     char player_dir[64];
@@ -117,7 +117,7 @@ void remove_game(const char *PLID, const char *status) {
 
 void create_game_file(const char *PLID, const char *time_str, const char *secret_key, const char *mode){
     char filename[64];
-    snprintf(filename, sizeof(filename), "GAMES/%s.txt", PLID);
+    snprintf(filename, sizeof(filename), "GAMES/GAME_%s.txt", PLID);
 
     FILE *file = fopen(filename, "w");
     if (!file) {
@@ -136,7 +136,7 @@ void create_game_file(const char *PLID, const char *time_str, const char *secret
 
 void update_game_file(const char *PLID, const char *guess, int time_elapsed, int nB, int nW){
     char filename[64];
-    snprintf(filename, sizeof(filename), "GAMES/%s.txt", PLID);
+    snprintf(filename, sizeof(filename), "GAMES/GAME_%s.txt", PLID);
 
     FILE *file = fopen(filename, "a");
     if (!file) {
@@ -212,7 +212,7 @@ void process_start_command(struct sockaddr_in *addr) {
 
 int check_for_duplicate_trial(const char *PLID, const char *C1, const char *C2, const char *C3, const char *C4) {
     char filename[64];
-    snprintf(filename, sizeof(filename), "GAMES/%s.txt", PLID);
+    snprintf(filename, sizeof(filename), "GAMES/GAME_%s.txt", PLID);
 
     FILE *file = fopen(filename, "r");
     if (!file) {
@@ -342,10 +342,10 @@ void process_debug_command(struct sockaddr_in *addr) {
     if (game) {
         sendto(udp_fd, "RDB NOK\n", 8, 0, (struct sockaddr *)addr, addrlen);
     } else {
-        game = find_or_create_game(PLID, time_str, "DEBUG");
+        game = find_or_create_game(PLID, time_str, "D");
         game->remaining_time = atoi(time_str);
         snprintf(game->secret_key, COLOR_SEQUENCE_LEN + 1, "%s%s%s%s", C1, C2, C3, C4);
-        create_game_file(PLID, time_str, game->secret_key,"DEBUG");
+        create_game_file(PLID, time_str, game->secret_key,"D");
         sendto(udp_fd, "RDB OK\n", 7, 0, (struct sockaddr *)addr, addrlen);
     }
 }
@@ -390,7 +390,7 @@ int extract_trials_from_game_file(const char *source_filename, const char *outpu
     if (fscanf(source_file, "%6s %15s %4s %15s %31s %ld", PLID, mode, secret_key, time_str, timestamp, &start_t) == 6) {
         
         fprintf(output_file, "===================================================\n");
-        fprintf(output_file, "PLID: %s  | Mode: %s | Started: %s\n\n", PLID, mode, timestamp);
+        fprintf(output_file, "PLID: %s | Mode: %s | Started: %s\n\n", PLID, mode, timestamp);
     }
     
     // Now read trials
@@ -468,7 +468,10 @@ void process_scoreboard_command(int client_fd) {
     }
 
     for (int i = 0; i < limit; i++) {
-        fprintf(out, "%03d %s %s %d\n", scores[i].SSS, scores[i].PLID, scores[i].secret_key, scores[i].total_plays);
+        fprintf(out, "%03d %s %s %d %s", scores[i].SSS, scores[i].PLID, scores[i].secret_key, scores[i].total_plays, scores[i].mode);
+        if(i != limit - 1) {
+            fprintf(out, "\n");
+        }
     }
     fclose(out);
     free(scores);
@@ -531,7 +534,7 @@ void process_show_trials_command(int client_fd) {
     snprintf(temp_filename, sizeof(temp_filename), "trials_%s.txt", PLID);
 
     if (game) {
-        snprintf(filename, sizeof(filename), "GAMES/%s.txt", PLID);
+        snprintf(filename, sizeof(filename), "GAMES/GAME_%s.txt", PLID);
     } else {
         if (!FindLastGame(PLID, filename)) {
             send(client_fd, "RST NOK\n", 8, 0);
