@@ -144,6 +144,7 @@ void handle_debug_command(const char *PLID, const char *time, const char *C1, co
     if (strcmp(response, "RDB OK\n") == 0) {
         int time_int = atoi(time);
         trial_number = 1;
+        gamestate = 1;
         printf("[+] Debug Game started successfully. You have %d seconds!\n", time_int);
 
     } else if(strcmp(response, "RDB NOK\n") == 0){
@@ -539,10 +540,10 @@ int main(int argc, char *argv[]) {
             printf("Exiting player client.\n");
             exit(0);
 
-        } else if (strcmp(cmd, "show_trials") == 0) {
+        } else if (strcmp(cmd, "show_trials") == 0 || strcmp(cmd, "st") == 0) {
             handle_show_trials_command(GSIP, GSPort);
 
-        } else if (strcmp(cmd, "scoreboard") == 0) {
+        } else if (strcmp(cmd, "scoreboard") == 0 || strcmp(cmd, "sb") == 0) {
             handle_scoreboard_command(GSIP, GSPort);
         } else {
             printf("Unknown command\n");

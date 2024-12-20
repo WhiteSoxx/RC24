@@ -1,3 +1,0 @@
-B R R R 2 1
-B B B B 1 0
-Remaining Time: 16 seconds
