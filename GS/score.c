@@ -49,3 +49,76 @@ int calculate_score(int total_trials, int game_duration, int max_duration) {
 
     return score;
 }
+
+int compare_scores(const void *a, const void *b) {
+    const ScoreEntry *sa = (const ScoreEntry*)a;
+    const ScoreEntry *sb = (const ScoreEntry*)b;
+    // ascending order by attempts means smaller SSS first
+    return sa->SSS - sb->SSS;
+}
+
+ScoreEntry* load_scores(int *count) {
+    struct dirent **filelist;
+    int n = scandir("SCORES", &filelist, NULL, alphasort);
+    if (n < 0) {
+        *count = 0;
+        return NULL;
+    }
+
+    ScoreEntry *scores = NULL;
+    int capacity = 0;
+    int score_count = 0;
+
+    for (int i = 0; i < n; i++) {
+        if (filelist[i]->d_name[0] == '.') {
+            free(filelist[i]);
+            continue;
+        }
+
+        char fullpath[512]; 
+        snprintf(fullpath, sizeof(fullpath), "SCORES/%s", filelist[i]->d_name);
+
+        FILE *f = fopen(fullpath, "r");
+        if (!f) {
+            perror("fopen score file");
+            free(filelist[i]);
+            continue;
+        }
+
+        char line[MAX_BUFFER_SIZE];
+        if (fgets(line, sizeof(line), f)) {
+            int SSS, N;
+            char PLID[7], CCCC[5], mode[16];
+            if (sscanf(line, "%d %6s %4s %d %15s", &SSS, PLID, CCCC, &N, mode) == 5) {
+                // Ensure capacity
+                if (score_count >= capacity) {
+                    int new_cap = capacity == 0 ? 64 : capacity * 2;
+                    ScoreEntry *new_scores = realloc(scores, new_cap * sizeof(ScoreEntry));
+                    if (!new_scores) {
+                        perror("realloc scores");
+                        fclose(f);
+                        free(filelist[i]);
+                        free(scores);
+                        *count = 0;
+                        return NULL;
+                    }
+                    scores = new_scores;
+                    capacity = new_cap;
+                }
+
+                ScoreEntry *entry = &scores[score_count++];
+                entry->SSS = SSS;
+                strncpy(entry->PLID, PLID, 6); entry->PLID[6] = '\0';
+                strncpy(entry->secret_key, CCCC, 4); entry->secret_key[4] = '\0';
+                entry->total_plays = N;
+            }
+        }
+
+        fclose(f);
+        free(filelist[i]);
+    }
+    free(filelist);
+
+    *count = score_count;
+    return scores;
+}

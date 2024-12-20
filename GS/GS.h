@@ -35,6 +35,13 @@ typedef struct PlayerGame {
     struct PlayerGame *next; // Linked list pointer to the next player
 } PlayerGame;
 
+typedef struct {
+    int SSS;            // Score (number of attempts)
+    char PLID[7];
+    char secret_key[5];
+    int total_plays;
+} ScoreEntry;
+
 void handle_udp_commands();
 void handle_tcp_connection(int client_fd, struct sockaddr_in *client_addr);
 void generate_secret_key(char *secret_key);
@@ -46,6 +53,9 @@ void format_secret_key(char *formatted_key, const char *secret_key);
 void calculate_nB_nW(const char *guess, const char *secret_key, int *nB, int *nW);
 void cleanup_and_exit(int signum);
 void create_score_file(PlayerGame *game);
+ScoreEntry* load_scores(int *count);
+int compare_scores(const void *a, const void *b);
+
 int calculate_score(int total_trials, int game_duration, int max_duration);
 int FindLastGame(const char *PLID, char *filename);
 

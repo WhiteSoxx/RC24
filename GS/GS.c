@@ -8,12 +8,6 @@ socklen_t addrlen;
 char buffer[MAX_BUFFER_SIZE];
 int verbose = 0;
 
-typedef struct {
-    int SSS;            // Score (number of attempts)
-    char PLID[7];
-    char secret_key[5];
-    int total_plays;
-} ScoreEntry;
 
 PlayerGame *get_game(const char *PLID) {
     PlayerGame *current = player_games;
@@ -113,8 +107,6 @@ void remove_game(const char *PLID, const char *status) {
             }
 
             end_game_file(PLID, status, current->start_time);
-            
-
             free(current);
             return;
         }
@@ -137,6 +129,7 @@ void create_game_file(const char *PLID, const char *time_str, const char *secret
     struct tm *t = localtime(&now);
     char timestamp[32];
     strftime(timestamp, sizeof(timestamp), "%Y-%m-%d %H:%M:%S", t);
+    // Format: PLID mode secret_key time_str timestamp start_time
     fprintf(file, "%s %s %s %s %s %ld\n", PLID, mode, secret_key, time_str, timestamp, (long)now);
     fclose(file);
 }
@@ -154,7 +147,6 @@ void update_game_file(const char *PLID, const char *guess, int time_elapsed, int
     fprintf(file, "T: %s %d %d %d\n", guess, nB, nW, time_elapsed);
     fclose(file);
 }
-
 
 int check_and_update_game_time(const char *PLID, struct sockaddr_in *addr, int client_fd, int is_udp, const char *command_type) {
     PlayerGame *game = get_game(PLID);
@@ -195,12 +187,12 @@ void process_start_command(struct sockaddr_in *addr) {
 
     int time_status = check_and_update_game_time(PLID, addr, -1, 1, "SNG");
     if (time_status == -1) {
-        // Time up. Just create new game anyway as per code given (seems odd, but following existing logic)
-        PlayerGame *game;
-        game = find_or_create_game(PLID, time_str, "PLAY");
+        // Time up. Just create new game anyway (following original logic)
+        PlayerGame *game = find_or_create_game(PLID, time_str, "PLAY");
         game->remaining_time = atoi(time_str);
         generate_secret_key(game->secret_key);
-        //create_game_file(PLID, time_str, game->secret_key,"PLAY");
+        // Not creating file here, because original code commented it out
+        // create_game_file(PLID, time_str, game->secret_key,"PLAY");
         sendto(udp_fd, "RSG OK\n", 7, 0, (struct sockaddr *)addr, addrlen);
         return;
     }
@@ -213,6 +205,7 @@ void process_start_command(struct sockaddr_in *addr) {
         game->remaining_time = atoi(time_str);
         generate_secret_key(game->secret_key);
         create_game_file(PLID, time_str, game->secret_key,"PLAY");
+        printf("PLID = %s: new game (max %s sec); Colors: %s\n", PLID, time_str, game->secret_key);
         sendto(udp_fd, "RSG OK\n", 7, 0, (struct sockaddr *)addr, addrlen);
     }
 }
@@ -223,7 +216,6 @@ int check_for_duplicate_trial(const char *PLID, const char *C1, const char *C2, 
 
     FILE *file = fopen(filename, "r");
     if (!file) {
-        perror("Failed to open game file for duplicate check");
         return 0;
     }
 
@@ -234,17 +226,17 @@ int check_for_duplicate_trial(const char *PLID, const char *C1, const char *C2, 
     while (fgets(line, sizeof(line), file)) {
         if (strncmp(line, "T: ", 3) == 0) {
             char trial_guess[5];
-            sscanf(line, "T: %4s", trial_guess);
-
-            if (strcmp(trial_guess, player_guess) == 0) {
-                fclose(file);
-                return 1; // The player's guess is a duplicate
+            if (sscanf(line, "T: %4s", trial_guess) == 1) {
+                if (strcmp(trial_guess, player_guess) == 0) {
+                    fclose(file);
+                    return 1; 
+                }
             }
         }
     }
 
     fclose(file);
-    return 0; // No duplicates found
+    return 0;
 }
 
 void process_try_command(struct sockaddr_in *addr) {
@@ -264,7 +256,7 @@ void process_try_command(struct sockaddr_in *addr) {
 
     int time_status = check_and_update_game_time(PLID, addr, -1, 1, "TRY");
     if (time_status == -1) {
-        return; // time up response already sent if needed
+        return; // time up handled
     }
 
     PlayerGame *game = get_game(PLID);
@@ -282,17 +274,16 @@ void process_try_command(struct sockaddr_in *addr) {
         return;
     }
 
-    char guess[COLOR_SEQUENCE_LEN + 1] = {C1[0], C2[0], C3[0], C4[0], '\0'};
-
     if (check_for_duplicate_trial(PLID, C1, C2, C3, C4)) {
         snprintf(buffer, MAX_BUFFER_SIZE, "RTR DUP\n");
         sendto(udp_fd, buffer, strlen(buffer), 0, (struct sockaddr *)addr, addrlen);
         return;
     }
 
+    char guess[COLOR_SEQUENCE_LEN + 1] = {C1[0], C2[0], C3[0], C4[0], '\0'};
     int nB, nW;
     calculate_nB_nW(guess, game->secret_key, &nB, &nW);
-    
+
     if (game->current_trial != nT || (strcmp(guess, game->last_guess) != 0 && nT == game->expected_trial - 1)) {
         snprintf(buffer, MAX_BUFFER_SIZE, "RTR INV\n");
         sendto(udp_fd, buffer, strlen(buffer), 0, (struct sockaddr *)addr, addrlen);
@@ -306,14 +297,20 @@ void process_try_command(struct sockaddr_in *addr) {
     } else {
         strncpy(game->last_guess, guess, COLOR_SEQUENCE_LEN);
         update_game_file(PLID, guess, game->elapsed_time, nB, nW);
+        
+
         snprintf(buffer, MAX_BUFFER_SIZE, "RTR OK %d %d %d\n", game->current_trial, nB, nW);
         sendto(udp_fd, buffer, strlen(buffer), 0, (struct sockaddr *)addr, addrlen);
 
         if (nB == 4){
+            printf("PLID = %s: try %s - nB = %d, nW = %d; WIN (game ended)\n", PLID, guess, nB, nW);
             create_score_file(game);
             remove_game(PLID, WIN);
             return;
         }
+
+        printf("PLID = %s: try %s - nB = %d, nW = %d; not guessed\n", PLID, guess, nB, nW);
+
 
         if(!(strcmp(guess, game->last_guess) == 0 && nT == game->expected_trial - 1)){
             game->current_trial++;
@@ -338,7 +335,6 @@ void process_debug_command(struct sockaddr_in *addr) {
 
     int time_status = check_and_update_game_time(PLID, addr, -1, 1, "DBG");
     if (time_status == -1) {
-        // time up, no response
         return;
     }
 
@@ -360,7 +356,6 @@ void process_quit_command(struct sockaddr_in *addr) {
 
     int time_status = check_and_update_game_time(PLID, addr, -1, 1, "QUT");
     if (time_status == -1) {
-        // time up, no response
         sendto(udp_fd, "RQT NOK\n", 8, 0, (struct sockaddr *)addr, addrlen);
         return;
     }
@@ -372,6 +367,7 @@ void process_quit_command(struct sockaddr_in *addr) {
         char formatted_key[8];
         format_secret_key(formatted_key, game->secret_key);
         snprintf(buffer, MAX_BUFFER_SIZE, "RQT OK %s\n", formatted_key);
+        printf("PLID = %s: quitting the game.\n", PLID);
         sendto(udp_fd, buffer, strlen(buffer), 0, (struct sockaddr *)addr, addrlen);
         remove_game(PLID, QUIT);
     }
@@ -388,6 +384,16 @@ int extract_trials_from_game_file(const char *source_filename, const char *outpu
         return 0;
     }
 
+    
+    char PLID[7], mode[16], secret_key[5], time_str[16], timestamp[32];
+    long start_t;
+    if (fscanf(source_file, "%6s %15s %4s %15s %31s %ld", PLID, mode, secret_key, time_str, timestamp, &start_t) == 6) {
+        
+        fprintf(output_file, "===================================================\n");
+        fprintf(output_file, "PLID: %s  | Mode: %s | Started: %s\n\n", PLID, mode, timestamp);
+    }
+    
+    // Now read trials
     char line[MAX_BUFFER_SIZE];
     while (fgets(line, sizeof(line), source_file)) {
         if (strncmp(line, "T: ", 3) == 0) {
@@ -402,6 +408,8 @@ int extract_trials_from_game_file(const char *source_filename, const char *outpu
     if (game) {
         fprintf(output_file, "Remaining Time: %d seconds\n", game->remaining_time);
     }
+
+    fprintf(output_file, "=======================================================\n");
 
     fclose(source_file);
     fclose(output_file);
@@ -436,63 +444,12 @@ void send_file_to_client(int client_fd, const char *status, const char *filepath
     fclose(file);
 }
 
-int compare_scores(const void *a, const void *b) {
-    const ScoreEntry *sa = (const ScoreEntry*)a;
-    const ScoreEntry *sb = (const ScoreEntry*)b;
-    return sb->SSS - sa->SSS; // ascending order by attempts
-}
-
 void process_scoreboard_command(int client_fd) {
-    struct dirent **filelist;
-    int n = scandir("SCORES", &filelist, NULL, alphasort);
-    if (n < 0) {
-        perror("scandir SCORES");
-        send(client_fd, "RSS EMPTY\n", 10, 0);
-        return;
-    }
-
-    ScoreEntry scores[1000]; 
     int score_count = 0;
+    ScoreEntry *scores = load_scores(&score_count);
 
-    for (int i = 0; i < n; i++) {
-        if (filelist[i]->d_name[0] == '.') {
-            free(filelist[i]);
-            continue;
-        }
-
-        char fullpath[512]; 
-        snprintf(fullpath, sizeof(fullpath), "SCORES/%s", filelist[i]->d_name);
-
-        FILE *f = fopen(fullpath, "r");
-        if (!f) {
-            perror("fopen score file");
-            free(filelist[i]);
-            continue;
-        }
-
-        char line[MAX_BUFFER_SIZE];
-        if (fgets(line, sizeof(line), f)) {
-            int SSS, N;
-            char PLID[7], CCCC[5], mode[16];
-            if (sscanf(line, "%d %6s %4s %d %15s", &SSS, PLID, CCCC, &N, mode) == 5) {
-                if (score_count < 1000) {
-                    ScoreEntry *entry = &scores[score_count++];
-                    entry->SSS = SSS;
-                    strncpy(entry->PLID, PLID, 6);
-                    entry->PLID[6] = '\0';
-                    strncpy(entry->secret_key, CCCC, 4);
-                    entry->secret_key[4] = '\0';
-                    entry->total_plays = N;
-                }
-            }
-        }
-
-        fclose(f);
-        free(filelist[i]);
-    }
-    free(filelist);
-
-    if (score_count == 0) {
+    if (!scores || score_count == 0) {
+        if (scores) free(scores);
         send(client_fd, "RSS EMPTY\n", 10, 0);
         return;
     }
@@ -505,6 +462,7 @@ void process_scoreboard_command(int client_fd) {
     FILE *out = fopen(scoreboard_file, "w");
     if (!out) {
         perror("fopen top_scoreboard");
+        free(scores);
         send(client_fd, "RSS EMPTY\n", 10, 0);
         return;
     }
@@ -513,6 +471,7 @@ void process_scoreboard_command(int client_fd) {
         fprintf(out, "%03d %s %s %d\n", scores[i].SSS, scores[i].PLID, scores[i].secret_key, scores[i].total_plays);
     }
     fclose(out);
+    free(scores);
 
     FILE *file = fopen(scoreboard_file, "r");
     if (!file) {
@@ -550,7 +509,7 @@ void process_show_trials_command(int client_fd) {
 
     int time_status = check_and_update_game_time(PLID, NULL, client_fd, 0, "STR");
     if (time_status == -1) {
-
+        // Time up, treat as finished game
         if (!FindLastGame(PLID, filename)) {
             send(client_fd, "RST NOK\n", 8, 0);
             return;
@@ -567,7 +526,7 @@ void process_show_trials_command(int client_fd) {
     }
 
     PlayerGame *game = get_game(PLID);
-    
+
     char temp_filename[64];
     snprintf(temp_filename, sizeof(temp_filename), "trials_%s.txt", PLID);
 
@@ -603,7 +562,7 @@ void handle_udp_commands() {
     }
 
     if (verbose) {
-        printf("UDP Received from %s:%d: %s\n", inet_ntoa(addr.sin_addr), ntohs(addr.sin_port), buffer);
+        printf("UDP Received from %s:%d: %s", inet_ntoa(addr.sin_addr), ntohs(addr.sin_port), buffer);
     }
 
     buffer[n] = '\0';
