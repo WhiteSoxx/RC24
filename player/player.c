@@ -173,6 +173,7 @@ void handle_quit_command() {
         reset_player();
 
     } else if(strncmp(response, "RQT NOK", 7) == 0){
+        reset_player();
         printf("[!] There is no game associated with this player.\n");
 
     } else if(strncmp(response, "RQT ERR", 7) == 0){

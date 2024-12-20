@@ -8,6 +8,13 @@ socklen_t addrlen;
 char buffer[MAX_BUFFER_SIZE];
 int verbose = 0;
 
+typedef struct {
+    int SSS;            // Score (number of attempts)
+    char PLID[7];
+    char secret_key[5];
+    int total_plays;
+} ScoreEntry;
+
 PlayerGame *get_game(const char *PLID) {
     PlayerGame *current = player_games;
     while (current != NULL) {
@@ -106,7 +113,7 @@ void remove_game(const char *PLID, const char *status) {
             }
 
             end_game_file(PLID, status, current->start_time);
-            create_score_file(current);
+            
 
             free(current);
             return;
@@ -148,20 +155,14 @@ void update_game_file(const char *PLID, const char *guess, int time_elapsed, int
     fclose(file);
 }
 
-// This function checks and updates the time for a given PLID.
-// If time is up:
-//  - If command_type == "TRY" (UDP), send "RTR ETM ..." to client and remove game.
-//  - Otherwise (SNG, DBG, QUT, STR), just remove the game and do NOT send anything.
-//
-// Returns:
-//  - -1 if time is up and the game was removed
-//  - 0 if no ongoing game for this PLID
-//  - 1 if game is ongoing and time updated
+// Checks and updates the time.
+// If time up:
+//  - If TRY: send RTR ETM ... and remove game
+//  - Otherwise: just remove game, no response
+// Returns: -1 time up, 0 no ongoing game, 1 ongoing and updated
 int check_and_update_game_time(const char *PLID, struct sockaddr_in *addr, int client_fd, int is_udp, const char *command_type) {
     PlayerGame *game = get_game(PLID);
     if (!game) {
-        // No ongoing game
-        printf("AA\n");
         return 0; 
     }
 
@@ -171,25 +172,21 @@ int check_and_update_game_time(const char *PLID, struct sockaddr_in *addr, int c
     game->remaining_time -= time_elapsed;
     game->last_update_time = current_time;
 
-    printf("Game remaining time: %d\n", game->remaining_time);
     if (game->remaining_time <= 0) {
         char formatted_key[8];
         format_secret_key(formatted_key, game->secret_key);
-
-        // If TRY and time is up, send RTR ETM ...
         if (strcmp(command_type, "TRY") == 0) {
+            // SEND RTR ETM
             if (is_udp && addr != NULL) {
                 snprintf(buffer, MAX_BUFFER_SIZE, "RTR ETM %s\n", formatted_key);
                 sendto(udp_fd, buffer, strlen(buffer), 0, (struct sockaddr *)addr, addrlen);
             }
-        } 
-        // For other commands, do nothing, just remove the game.
-
+        }
         remove_game(PLID, TIMEOUT);
-        return -1; // Game ended due to timeout
+        return -1; // time up
     }
 
-    return 1; // Game ongoing
+    return 1; // ongoing
 }
 
 void process_start_command(struct sockaddr_in *addr) {
@@ -200,11 +197,15 @@ void process_start_command(struct sockaddr_in *addr) {
         return;
     }
 
-    // Check if time up for existing game (no output if time up)
     int time_status = check_and_update_game_time(PLID, addr, -1, 1, "SNG");
     if (time_status == -1) {
-        // Game ended due to timeout, no response needed for SNG
-        // Just return
+        // Time up. Just create new game anyway as per code given (seems odd, but following existing logic)
+        PlayerGame *game;
+        game = find_or_create_game(PLID, time_str, "PLAY");
+        game->remaining_time = atoi(time_str);
+        generate_secret_key(game->secret_key);
+        //create_game_file(PLID, time_str, game->secret_key,"PLAY");
+        sendto(udp_fd, "RSG OK\n", 7, 0, (struct sockaddr *)addr, addrlen);
         return;
     }
 
@@ -235,11 +236,9 @@ void process_try_command(struct sockaddr_in *addr) {
         return;
     }
 
-    // Check and update time. If time up, we send RTR ETM inside the function for TRY.
     int time_status = check_and_update_game_time(PLID, addr, -1, 1, "TRY");
     if (time_status == -1) {
-        // Game ended due to timeout and response sent (RTR ETM). Stop.
-        return;
+        return; // time up response already sent if needed
     }
 
     PlayerGame *game = get_game(PLID);
@@ -285,6 +284,7 @@ void process_try_command(struct sockaddr_in *addr) {
         sendto(udp_fd, buffer, strlen(buffer), 0, (struct sockaddr *)addr, addrlen);
 
         if (nB == 4){
+            create_score_file(game);
             remove_game(PLID, WIN);
             return;
         }
@@ -310,10 +310,9 @@ void process_debug_command(struct sockaddr_in *addr) {
         return;
     }
 
-    // Check time, if time is up, just remove game, no response.
     int time_status = check_and_update_game_time(PLID, addr, -1, 1, "DBG");
     if (time_status == -1) {
-        // Game ended due to timeout, no response needed.
+        // time up, no response
         return;
     }
 
@@ -333,10 +332,10 @@ void process_quit_command(struct sockaddr_in *addr) {
     char PLID[7];
     sscanf(buffer, "QUT %6s", PLID);
 
-    // Check time, if time is up remove game no response
     int time_status = check_and_update_game_time(PLID, addr, -1, 1, "QUT");
     if (time_status == -1) {
-        // Game ended due to timeout, no response needed.
+        // time up, no response
+        sendto(udp_fd, "RQT NOK\n", 8, 0, (struct sockaddr *)addr, addrlen);
         return;
     }
 
@@ -383,45 +382,6 @@ int extract_trials_from_game_file(const char *source_filename, const char *outpu
     return 1;
 }
 
-void process_show_trials_command(int client_fd) {
-    char PLID[7];
-    sscanf(buffer, "STR %6s", PLID);
-    if (!validate_plid(PLID)) {
-        send(client_fd, "RST NOK\n", 8, 0);
-        return;
-    }
-
-    // Check time, if time up remove game no response
-    int time_status = check_and_update_game_time(PLID, NULL, client_fd, 0, "STR");
-    if (time_status == -1) {
-        // Game ended due to timeout, no response needed.
-        return;
-    }
-
-    PlayerGame *game = get_game(PLID);
-    char filename[128];
-    char temp_filename[64];
-    snprintf(temp_filename, sizeof(temp_filename), "trials_%s.txt", PLID);
-
-    if (game) {
-        snprintf(filename, sizeof(filename), "GAMES/%s.txt", PLID);
-    } else {
-        if (!FindLastGame(PLID, filename)) {
-            send(client_fd, "RST NOK\n", 8, 0);
-            return;
-        }
-    }
-
-    if (!extract_trials_from_game_file(filename, temp_filename, game)) {
-        send(client_fd, "RST NOK\n", 8, 0);
-        return;
-    }
-
-    const char *status = game ? "ACT" : "FIN";
-    send_file_to_client(client_fd, status, temp_filename);
-    remove(temp_filename);
-}
-
 void send_file_to_client(int client_fd, const char *status, const char *filepath) {
     FILE *file = fopen(filepath, "r");
     if (!file) {
@@ -448,6 +408,161 @@ void send_file_to_client(int client_fd, const char *status, const char *filepath
     }
 
     fclose(file);
+}
+
+int compare_scores(const void *a, const void *b) {
+    const ScoreEntry *sa = (const ScoreEntry*)a;
+    const ScoreEntry *sb = (const ScoreEntry*)b;
+    return sb->SSS - sa->SSS; // ascending order by attempts
+}
+
+void process_scoreboard_command(int client_fd) {
+    struct dirent **filelist;
+    int n = scandir("SCORES", &filelist, NULL, alphasort);
+    if (n < 0) {
+        perror("scandir SCORES");
+        send(client_fd, "RSS EMPTY\n", 10, 0);
+        return;
+    }
+
+    ScoreEntry scores[1000]; 
+    int score_count = 0;
+
+    for (int i = 0; i < n; i++) {
+        if (filelist[i]->d_name[0] == '.') {
+            free(filelist[i]);
+            continue;
+        }
+
+        char fullpath[512]; // Increased size to avoid truncation warning
+        snprintf(fullpath, sizeof(fullpath), "SCORES/%s", filelist[i]->d_name);
+
+        FILE *f = fopen(fullpath, "r");
+        if (!f) {
+            perror("fopen score file");
+            free(filelist[i]);
+            continue;
+        }
+
+        char line[MAX_BUFFER_SIZE];
+        if (fgets(line, sizeof(line), f)) {
+            int SSS, N;
+            char PLID[7], CCCC[5], mode[16];
+            if (sscanf(line, "%d %6s %4s %d %15s", &SSS, PLID, CCCC, &N, mode) == 5) {
+                if (score_count < 1000) {
+                    ScoreEntry *entry = &scores[score_count++];
+                    entry->SSS = SSS;
+                    strncpy(entry->PLID, PLID, 6);
+                    entry->PLID[6] = '\0';
+                    strncpy(entry->secret_key, CCCC, 4);
+                    entry->secret_key[4] = '\0';
+                    entry->total_plays = N;
+                }
+            }
+        }
+
+        fclose(f);
+        free(filelist[i]);
+    }
+    free(filelist);
+
+    if (score_count == 0) {
+        send(client_fd, "RSS EMPTY\n", 10, 0);
+        return;
+    }
+
+    qsort(scores, score_count, sizeof(ScoreEntry), compare_scores);
+
+    int limit = score_count < 10 ? score_count : 10;
+
+    char scoreboard_file[] = "top_scoreboard.txt";
+    FILE *out = fopen(scoreboard_file, "w");
+    if (!out) {
+        perror("fopen top_scoreboard");
+        send(client_fd, "RSS EMPTY\n", 10, 0);
+        return;
+    }
+
+    // Print line: SSS PLID secret_key total_plays
+    for (int i = 0; i < limit; i++) {
+        fprintf(out, "%03d %s %s %d\n", scores[i].SSS, scores[i].PLID, scores[i].secret_key, scores[i].total_plays);
+    }
+    fclose(out);
+
+    FILE *file = fopen(scoreboard_file, "r");
+    if (!file) {
+        perror("fopen top_scoreboard to send");
+        send(client_fd, "RSS EMPTY\n", 10, 0);
+        return;
+    }
+
+    fseek(file, 0, SEEK_END);
+    long filesize = ftell(file);
+    rewind(file);
+
+    char header[MAX_BUFFER_SIZE];
+    snprintf(header, sizeof(header), "RSS OK %s %ld\n", "scoreboard.txt", filesize);
+    send(client_fd, header, strlen(header), 0);
+
+    char file_buffer[MAX_BUFFER_SIZE];
+    size_t nread;
+    while ((nread = fread(file_buffer, 1, sizeof(file_buffer), file)) > 0) {
+        send(client_fd, file_buffer, nread, 0);
+    }
+
+    fclose(file);
+}
+
+void process_show_trials_command(int client_fd) {
+    char PLID[7];
+    char filename[128];
+
+    sscanf(buffer, "STR %6s", PLID);
+    if (!validate_plid(PLID)) {
+        send(client_fd, "RST NOK\n", 8, 0);
+        return;
+    }
+
+    int time_status = check_and_update_game_time(PLID, NULL, client_fd, 0, "STR");
+    if (time_status == -1) {
+
+        if (!FindLastGame(PLID, filename)) {
+            send(client_fd, "RST NOK\n", 8, 0);
+            return;
+        }
+        char temp_filename[64];
+        snprintf(temp_filename, sizeof(temp_filename), "trials_%s.txt", PLID);
+        if (!extract_trials_from_game_file(filename, temp_filename, NULL)) {
+            send(client_fd, "RST NOK\n", 8, 0);
+            return;
+        }
+        send_file_to_client(client_fd, "FIN", temp_filename);
+        remove(temp_filename);
+        return;
+    }
+
+    PlayerGame *game = get_game(PLID);
+    
+    char temp_filename[64];
+    snprintf(temp_filename, sizeof(temp_filename), "trials_%s.txt", PLID);
+
+    if (game) {
+        snprintf(filename, sizeof(filename), "GAMES/%s.txt", PLID);
+    } else {
+        if (!FindLastGame(PLID, filename)) {
+            send(client_fd, "RST NOK\n", 8, 0);
+            return;
+        }
+    }
+
+    if (!extract_trials_from_game_file(filename, temp_filename, game)) {
+        send(client_fd, "RST NOK\n", 8, 0);
+        return;
+    }
+
+    const char *status = game ? "ACT" : "FIN";
+    send_file_to_client(client_fd, status, temp_filename);
+    remove(temp_filename);
 }
 
 void handle_udp_commands() {
@@ -498,42 +613,10 @@ void handle_tcp_connection(int client_fd) {
 
     if (strncmp(local_buffer, "STR", 3) == 0) {
         process_show_trials_command(client_fd);
-    } 
-    else if (strncmp(local_buffer, "SSB", 3) == 0) {
-        // This is a placeholder for scoreboard logic.
-        // Implement similar logic to show_trials if needed.
-        FILE *file = fopen("scoreboard.txt", "r");
-        if (!file) {
-            perror("Failed to open scoreboard file");
-            send(client_fd, "RST EMPTY\n", 10, 0);
-            return;
-        }
-
-        fseek(file, 0, SEEK_END);
-        long filesize = ftell(file);
-        rewind(file);
-
-        // If empty file => RSS EMPTY
-        if (filesize == 0) {
-            send(client_fd, "RSS EMPTY\n", 10, 0);
-            fclose(file);
-            return;
-        }
-
-        // RSS OK Fname Fsize
-        char header[MAX_BUFFER_SIZE];
-        snprintf(header, sizeof(header), "RSS OK scoreboard.txt %ld\n", filesize);
-        send(client_fd, header, strlen(header), 0);
-
-        char file_buffer[MAX_BUFFER_SIZE];
-        size_t nread;
-        while ((nread = fread(file_buffer, 1, sizeof(file_buffer), file)) > 0) {
-            send(client_fd, file_buffer, nread, 0);
-        }
-
-        fclose(file);
-    } 
-    else {
+    } else if (strncmp(local_buffer, "SSB", 3) == 0) {
+        // Implement the scoreboard functionality
+        process_scoreboard_command(client_fd);
+    } else {
         printf("Unknown TCP request\n");
         send(client_fd, "RST NOK\n", 8, 0);
     }
