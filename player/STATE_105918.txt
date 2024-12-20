@@ -1,0 +1,12 @@
+     Active game found for player 105918
+Game initiated: 2024-12-19 23:13:31 with 20 seconds to be completed
+
+     --- Transactions found: 4 ---
+
+Trial: BBBB, nB: 0, nW: 0 at   2s
+Trial: RRRR, nB: 1, nW: 0 at   5s
+Trial: RBPY, nB: 1, nW: 0 at   7s
+Trial: OOOO, nB: 2, nW: 0 at  11s
+
+  -- 6 seconds remaining to be completed -- 
+

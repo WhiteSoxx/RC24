@@ -8,6 +8,8 @@
 #include <signal.h>
 #include <sys/stat.h>
 #include <sys/types.h>
+#include <dirent.h>
+
 
 #define WIN "W"
 #define FAIL "F"
@@ -44,5 +46,6 @@ void calculate_nB_nW(const char *guess, const char *secret_key, int *nB, int *nW
 void cleanup_and_exit(int signum);
 void create_score_file(PlayerGame *game);
 int calculate_score(int total_trials, int game_duration, int max_duration);
+int FindLastGame(const char *PLID, char *filename);
 
 #endif
