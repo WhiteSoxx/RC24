@@ -1,29 +1,3 @@
-/**
- * Grupo: 54
- * Nomes:
- *      Gabriel Bispo (1105918)
- *      Guilherme Filipe (1106326)
- * 
- * Turno: RC11L03
- *
- * @brief Implementation of the player application.
- *
- * This file defines the logic for communicating with the GS using UDP and TCP connections.
- * The Player supports the following commands:
- * - start <PLID> <time>
- * - try <C1> <C2> <C3> <C4>
- * - debug <PLID> <time> <C1> <C2> <C3> <C4>
- * - quit
- * - show_trials or st
- * - scoreboard or sb
- * - exit
- *
- * Additionally, if the player receives a SIGINT (Ctrl+C), it will process it
- * like an exit command (performing the quit if a game is ongoing, then exiting).
- * Also, if the player doesn't receive a response from the server in 10 seconds,
- * it stops waiting and returns control to the user.
-*/
-
 #include "../common.h"
 #include <signal.h>
 #include <errno.h>
@@ -99,6 +73,8 @@ char* receive_udp_response() {
  * @param time The proposed time for the game.
  */
 void handle_start_command(const char *PLID, const char *time) {
+    
+    // The server needs to know the PLID.
     if (!validate_plid(PLID)) {
         printf("[!] Invalid start command, PLID must be a 6-digit number.\n");
         return;
@@ -114,7 +90,6 @@ void handle_start_command(const char *PLID, const char *time) {
     strcpy(currentPLID, PLID);
 
     snprintf(buffer, MAX_BUFFER_SIZE, "SNG %s %03d\n", currentPLID, time_int);
-    printf("(->) Sending: %s", buffer);
 
     sendto(fd, buffer, strlen(buffer), 0, res->ai_addr, res->ai_addrlen);
 
@@ -123,8 +98,6 @@ void handle_start_command(const char *PLID, const char *time) {
         printf("[!] No response from server (timeout or error).\n");
         return;
     }
-
-    printf("(<-) Server Response: %s\n", response);
 
     if (strcmp(response, "RSG OK\n") == 0) {
         trial_number = 1;
@@ -156,10 +129,7 @@ void handle_try_command(const char *C1, const char *C2, const char *C3, const ch
         printf("[!] No active game. Please start a game first.\n");
         return;
     }
-
-    printf("PLID: %s\n", currentPLID);
     snprintf(buffer, MAX_BUFFER_SIZE, "TRY %s %s %s %s %s %d\n", currentPLID, C1, C2, C3, C4, trial_number);
-    printf("(->) Sending: %s", buffer);
 
     sendto(fd, buffer, strlen(buffer), 0, res->ai_addr, res->ai_addrlen);
     char* response = receive_udp_response();
@@ -168,8 +138,8 @@ void handle_try_command(const char *C1, const char *C2, const char *C3, const ch
         return;
     }
 
-    printf("(<-) Server Response: %s\n", response);
 
+    // Server accepted guess
     if (strncmp(response, "RTR OK", 6) == 0){
         int trial, nB, nW;
         sscanf(response, "RTR OK %d %d %d", &trial, &nB, &nW);
@@ -312,6 +282,8 @@ void handle_show_trials_command(const char *GSIP, const char *GSPort) {
     thints.ai_family = AF_INET;
     thints.ai_socktype = SOCK_STREAM;
 
+    // Estabilishes TCP connection.
+
     if ((errcode = getaddrinfo(GSIP, GSPort, &thints, &tres)) != 0) {
         fprintf(stderr, "getaddrinfo error: %s\n", gai_strerror(errcode));
         return;
@@ -340,40 +312,80 @@ void handle_show_trials_command(const char *GSIP, const char *GSPort) {
         return;
     }
 
-    int total_read = 0;
-    memset(tbuffer, 0, sizeof(tbuffer));
-    while (1) {
-        int r = recv(tcp_fd, tbuffer + total_read, 1, 0);
+    // Minimal check for NOK before reading until 4 spaces:
+    {
+        char peek_buf[16];
+        int r = recv(tcp_fd, peek_buf, sizeof(peek_buf)-1, MSG_PEEK);
+        if (r <= 0) {
+            perror("Failed to read show trials response");
+            close(tcp_fd);
+            return;
+        }
+        peek_buf[r] = '\0';
+
+        if (strstr(peek_buf, "RST NOK") == peek_buf) {
+            // The server response starts with "RST NOK"
+            // Consume the line until newline
+            while (1) {
+                char c;
+                int rr = recv(tcp_fd, &c, 1, 0);
+                if (rr <= 0 || c == '\n') break;
+            }
+            printf("[!] No game available or error occurred for PLID %s.\n", currentPLID);
+            close(tcp_fd);
+            return;
+        }
+    }
+
+    // If not NOK, proceed with original logic:
+    // Server sends "RST ACT fname fsize " or "RST FIN fname fsize " and then data plus a newline at the end.
+
+    char header_buffer[MAX_BUFFER_SIZE];
+    int header_len = 0;
+    int space_count = 0;
+
+    // Read until we have encountered the 4th space:
+    // RST, status, fname, fsize, and then a trailing space -> total 4 spaces.
+    while (space_count < 4) {
+        char c;
+        int r = recv(tcp_fd, &c, 1, 0);
         if (r <= 0) {
             perror("recv failed while reading header");
             close(tcp_fd);
             return;
         }
-        if (tbuffer[total_read] == '\n') {
-            tbuffer[total_read] = '\0'; 
-            break;
-        }
-        total_read++;
-        if (total_read >= (int)sizeof(tbuffer)-1) {
+
+        if (header_len >= (int)sizeof(header_buffer)-1) {
+            printf("[!] Header too long.\n");
             close(tcp_fd);
             return;
         }
+
+        header_buffer[header_len++] = c;
+        if (c == ' ') {
+            space_count++;
+        }
     }
 
-    if (sscanf(tbuffer, "RST %3s %63s %ld ", status, fname, &fsize) < 2) {
+    header_buffer[header_len] = '\0';
+
+    if (sscanf(header_buffer, "RST %3s %63s %ld", status, fname, &fsize) != 3) {
         printf("[!] Error: show trials not available at this stage.\n");
-        close(tcp_fd);
-        return;
-    }
-
-    if (strcmp(status, "NOK") == 0) {
-        printf("[!] No game available or error occurred for PLID %s.\n", currentPLID);
         close(tcp_fd);
         return;
     }
 
     if (strcmp(status, "ACT") != 0 && strcmp(status, "FIN") != 0) {
         printf("[!] Unrecognized status: %s\n", status);
+        // consume until newline
+        {
+            char c;
+            while (1) {
+                int rr = recv(tcp_fd, &c, 1, 0);
+                if (rr <= 0) break;
+                if (c == '\n') break;
+            }
+        }
         close(tcp_fd);
         return;
     }
@@ -385,6 +397,7 @@ void handle_show_trials_command(const char *GSIP, const char *GSPort) {
         return;
     }
 
+    // Read exactly fsize bytes of file data
     long bytes_received = 0;
     while (bytes_received < fsize) {
         int to_read = (fsize - bytes_received) < MAX_BUFFER_SIZE ? (int)(fsize - bytes_received) : MAX_BUFFER_SIZE;
@@ -400,6 +413,17 @@ void handle_show_trials_command(const char *GSIP, const char *GSPort) {
     }
 
     fclose(file);
+
+    // After data, server sends newline '\n', consume it
+    {
+        char c;
+        while (1) {
+            int rr = recv(tcp_fd, &c, 1, 0);
+            if (rr <= 0) break;
+            if (c == '\n') break;
+        }
+    }
+
     close(tcp_fd);
 
     printf("[+] Received file '%s' (%ld bytes) from server.\n", fname, fsize);
@@ -411,21 +435,18 @@ void handle_show_trials_command(const char *GSIP, const char *GSPort) {
         printf("[+] Ongoing game summary received. You may continue playing.\n");
     }
 
-    // Print the file content to the player
     file = fopen(fname, "r");
     if (!file) {
         perror("Failed to open received trials file for reading");
         return;
     }
-    printf("=======================================================\n");
     while (fgets(tbuffer, sizeof(tbuffer), file)) {
         printf("%s", tbuffer);
     }
     fclose(file);
-    printf("=======================================================\n");
-
-    
 }
+
+
 
 /**
  * @brief Handles the "scoreboard" command.
@@ -473,91 +494,141 @@ void handle_scoreboard_command(const char *GSIP, const char *GSPort) {
         return;
     }
 
-    int total_read = 0;
-    memset(tbuffer, 0, sizeof(tbuffer));
-
-    while (1) {
-        int r = recv(tcp_fd, tbuffer + total_read, 1, 0);
+    // Minimal check for EMPTY before while < 4:
+    {
+        char peek_buf[16];
+        int r = recv(tcp_fd, peek_buf, sizeof(peek_buf)-1, MSG_PEEK);
         if (r <= 0) {
-            perror("recv failed while reading scoreboard header");
+            perror("Failed to read scoreboard response");
             close(tcp_fd);
             return;
         }
-        if (tbuffer[total_read] == '\n') {
-            tbuffer[total_read] = '\0';
-            break;
-        }
-        total_read++;
-        if (total_read >= (int)sizeof(tbuffer)-1) {
+        peek_buf[r] = '\0';
+
+        if (strstr(peek_buf, "RSS EMPTY") == peek_buf) {
+            // The server response starts with "RSS EMPTY"
+            // Consume the line until newline
+            while (1) {
+                char c;
+                int rr = recv(tcp_fd, &c, 1, 0);
+                if (rr <= 0 || c == '\n') break;
+            }
+            printf("[!] The scoreboard is empty. No winners yet.\n");
             close(tcp_fd);
             return;
         }
     }
 
-    int fields = sscanf(tbuffer, "RSS %5s %63s %ld", status, fname, &fsize);
-    if (strcmp(status, "EMPTY") == 0) {
-        printf("[!] The scoreboard is empty. No winners yet.\n");
+    // If not EMPTY, proceed with original logic:
+    // Server sends "RSS OK fname fsize " and then data and a newline at the end.
+
+    char header_buffer[MAX_BUFFER_SIZE];
+    int header_len = 0;
+    int space_count = 0;
+
+    // Read until we encounter the 4th space
+    while (space_count < 4) {
+        char c;
+        int r = recv(tcp_fd, &c, 1, 0);
+        if (r <= 0) {
+            perror("Failed to read scoreboard header");
+            close(tcp_fd);
+            return;
+        }
+        if (header_len >= (int)sizeof(header_buffer)-1) {
+            printf("[!] Header too long.\n");
+            close(tcp_fd);
+            return;
+        }
+        header_buffer[header_len++] = c;
+        if (c == ' ') {
+            space_count++;
+        }
+    }
+
+    header_buffer[header_len] = '\0';
+
+    // Parse line
+    if (sscanf(header_buffer, "RSS %5s %63s %ld", status, fname, &fsize) != 3) {
+        printf("[!] Invalid response format from server.\n");
         close(tcp_fd);
         return;
-    } else if (strcmp(status, "OK") == 0) {
-        if (fields < 3 || ) {
-            printf("[!] Invalid response format from server.\n");
-            close(tcp_fd);
-            return;
-        }
-
-        FILE *file = fopen(fname, "wb");
-        if (!file) {
-            perror("Failed to open local file for writing");
-            close(tcp_fd);
-            return;
-        }
-
-        long bytes_received = 0;
-        while (bytes_received < fsize) {
-            int to_read = (fsize - bytes_received) < MAX_BUFFER_SIZE ? (int)(fsize - bytes_received) : MAX_BUFFER_SIZE;
-            int n = recv(tcp_fd, tbuffer, to_read, 0);
-            int n = fread(tbuffer, 1, sizeof(tbuffer), file);
-            if (n <= 0) {
-                perror("Failed to receive scoreboard file data");
-                fclose(file);
-                close(tcp_fd);
-                return;
-            }
-            fwrite(tbuffer, 1, n, file);
-            bytes_received += n;
-        }
-
-        fclose(file);
-        close(tcp_fd);
-
-        printf("[+] Received scoreboard file '%s' (%ld bytes) from server.\n", fname, fsize);
-        printf("[+] File '%s' saved successfully.\n", fname);
-
-        FILE *read_file = fopen(fname, "r");
-        if (!read_file) {
-            perror("Failed to open scoreboard file for reading");
-            return;
-        }
-
-        printf("===== Top 10 Scores =====\n");
-        while (fgets(tbuffer, sizeof(tbuffer), read_file)) {
-            printf("%s", tbuffer);
-        }
-        printf("\n=========================\n");
-        fclose(read_file);
-
-    } else {
-        printf("[!] Error: %s\n", status);
-        close(tcp_fd);
     }
+
+    if (strcmp(status, "OK") != 0) {
+        printf("[!] Error: %s\n", status);
+        // consume until newline
+        {
+            char c;
+            while (1) {
+                int rr = recv(tcp_fd, &c, 1, 0);
+                if (rr <= 0) break;
+                if (c == '\n') break;
+            }
+        }
+        close(tcp_fd);
+        return;
+    }
+
+    // If OK, read fsize bytes of file data
+    FILE *file = fopen(fname, "wb");
+    if (!file) {
+        perror("Failed to open local file for writing");
+        close(tcp_fd);
+        return;
+    }
+
+    long bytes_received = 0;
+    while (bytes_received < fsize) {
+        int to_read = (fsize - bytes_received) < MAX_BUFFER_SIZE ? (int)(fsize - bytes_received) : MAX_BUFFER_SIZE;
+        int n = recv(tcp_fd, tbuffer, to_read, 0);
+        if (n <= 0) {
+            perror("Failed to receive scoreboard file data");
+            fclose(file);
+            close(tcp_fd);
+            return;
+        }
+        fwrite(tbuffer, 1, n, file);
+        bytes_received += n;
+    }
+
+    fclose(file);
+
+    // After data, server sends newline
+    {
+        char c;
+        while (1) {
+            int rr = recv(tcp_fd, &c, 1, 0);
+            if (rr <= 0) break; 
+            if (c == '\n') break;
+        }
+    }
+
+    close(tcp_fd);
+
+    printf("[+] Received scoreboard file '%s' (%ld bytes) from server.\n", fname, fsize);
+    printf("[+] File '%s' saved successfully.\n", fname);
+
+    FILE *read_file = fopen(fname, "r");
+    if (!read_file) {
+        perror("Failed to open scoreboard file for reading");
+        return;
+    }
+
+    printf("===== Top 10 Scores =====\n");
+    while (fgets(tbuffer, sizeof(tbuffer), read_file)) {
+        printf("%s", tbuffer);
+    }
+    printf("\n=========================\n");
+    fclose(read_file);
 }
+
 
 /**
  * @brief Main function of the Player application.
  *
  * Initializes the player's UDP connection to the Game Server (GS) and
- * processes commands. On Ctrl+C, it acts like "exit".
+ * processes commands..
  */
 int main(int argc, char *argv[]) {
     char GSIP[256] = DEFAULT_IP;
@@ -658,6 +729,8 @@ int main(int argc, char *argv[]) {
             continue;
         }
 
+        // Checks if it's one of the program commands
+
         if (strcmp(cmd, "start") == 0) {
             char PLID[7];
             char time_str[16];
@@ -707,7 +780,6 @@ int main(int argc, char *argv[]) {
         }
     }
 
-    // Should never reach here
     freeaddrinfo(res);
     close(fd);
     return 0;

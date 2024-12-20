@@ -1,6 +1,14 @@
 #include "GS.h"
 #include "../common.h"
 
+/**
+ * @brief Creates a score file for a player in the SCORES directory.
+ *
+ * This function generates a score file with the name:
+ * SSS_PLID_DDMMYYYY_HHMMSS.txt
+ * 
+ * @param game Pointer to the PlayerGame structure containing the player's game information.
+ */
 void create_score_file(PlayerGame *game) {
     if (!game) {
         printf("[ERROR] PlayerGame is NULL. Cannot create score file.\n");
@@ -43,7 +51,16 @@ void create_score_file(PlayerGame *game) {
 }
 
 
+/**
+ * @brief Calculates the player's final score (0-100) based on game performance.
+ * The score is calculated using the player's total number of trials and game duration.
 
+ * 
+ * @param total_trials Total number of trials taken by the player.
+ * @param game_duration Total time (in seconds) the player spent on the game.
+ * @param max_duration Maximum duration of the game.
+ * @return int The player's final score (0-100).
+ */
 int calculate_score(int total_trials, int game_duration, int max_duration) {
 
     int penalty_from_trials = (total_trials - 1) * 5;
@@ -58,13 +75,33 @@ int calculate_score(int total_trials, int game_duration, int max_duration) {
     return score;
 }
 
+/**
+ * @brief Comparator function for sorting score entries in descending order.
+ *
+ * Used by qsort() to sort ScoreEntry structures in descending order of score (SSS).
+ *
+ * @param a Pointer to the first ScoreEntry.
+ * @param b Pointer to the second ScoreEntry.
+ * @return int result
+ */
 int compare_scores(const void *a, const void *b) {
     const ScoreEntry *sa = (const ScoreEntry*)a;
     const ScoreEntry *sb = (const ScoreEntry*)b;
-    // ascending order by attempts means smaller SSS first
-    return sa->SSS - sb->SSS;
+    // descending order
+    return sb->SSS - sa->SSS;
 }
 
+
+/**
+ * @brief Loads all score files from the SCORES directory into an array.
+ *
+ * Reads every file in the SCORES directory, parses its contents, and 
+ * loads them into a dynamic array of ScoreEntry structures. The 
+ * function resizes the array as needed using realloc.
+ * 
+ * @param count Pointer to an integer to store the number of loaded scores.
+ * @return ScoreEntry* Pointer to the array of ScoreEntry structures.
+ */
 ScoreEntry* load_scores(int *count) {
     struct dirent **filelist;
     int n = scandir("SCORES", &filelist, NULL, alphasort);
