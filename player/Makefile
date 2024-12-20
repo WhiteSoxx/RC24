@@ -24,4 +24,4 @@ $(PLAYER_EXEC): $(PLAYER_SRC) $(COMMON_SRC) $(COMMON_HEADER)
 
 # Clean the compiled files
 clean:
-	rm -f $(PLAYER_EXEC)
+	rm -f $(PLAYER_EXEC) *.txt

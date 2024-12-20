@@ -26,4 +26,4 @@ $(GS_EXEC): $(GS_SRC) $(SCORE_SRC) $(COMMON_SRC) $(GS_HEADER) $(COMMON_HEADER)
 
 # Clean the compiled files
 clean:
-	rm -f $(GS_EXEC)
+	rm -f $(GS_EXEC) *.txt 

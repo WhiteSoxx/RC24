@@ -1,3 +1,24 @@
+/**
+ * Grupo: 54
+ * Nomes:
+ *      Gabriel Bispo (1105918)
+ *      Guilherme Filipe (1106326)
+ * 
+ * Turno: RC11L03
+ * 
+ * @brief Implementation of the player application.
+ *
+ * This file defines the logic for communicating with the GS using UDP and TCP connections.
+ * The Player supports the following commands:
+ * - start <PLID> <time>
+ * - try <C1> <C2> <C3> <C4>
+ * - debug <PLID> <time> <C1> <C2> <C3> <C4>
+ * - quit
+ * - show_trials or st
+ * - scoreboard or sb
+ * - exit
+*/
+
 #include "../common.h"
 
 int fd, errcode;
@@ -8,6 +29,12 @@ char currentPLID[7] = "";
 int gamestate = 0;
 int trial_number = 1;
 
+
+/**
+ * @brief Resets the player's game state.
+ *
+ * Resets player variables to their original state, except PLID.
+ */
 void reset_player(){
     trial_number = 1;
     gamestate = 0;
@@ -15,7 +42,19 @@ void reset_player(){
 
 char* receive_udp_response();
 
+
+/**
+ * @brief Handles the "start" command.
+ *
+ * Sends the "SNG" message to the server to request the start of a new game 
+ * for the given PLID and time limit. Validates the PLID before sending.
+ * 
+ * @param PLID The 6-digit Player ID.
+ * @param time The proposed time for the game.
+ */
 void handle_start_command(const char *PLID, const char *time) {
+    
+    // Server requires to know the PLID of the player, so we need to validate.
     if (!validate_plid(PLID)) {
         printf("[!] Invalid start command, PLID must be a 6-digit number.\n");
         return;
@@ -43,10 +82,12 @@ void handle_start_command(const char *PLID, const char *time) {
 
     printf("(<-) Server Response: %s\n", response);
 
+    // Displayed information (printf) explains what each response means.
     if (strcmp(response, "RSG OK\n") == 0) {
         trial_number = 1;
         gamestate = 1;
         printf("[+] Game started successfully. You can now play! You have %d seconds!\n", time_int);
+
     } else if (strcmp(response, "RSG NOK\n") == 0) {
         printf("[!] A game is already associated with this PLID.\n");
     } else if (strcmp(response, "RSG ERR\n") == 0) {
@@ -57,6 +98,19 @@ void handle_start_command(const char *PLID, const char *time) {
     free(response);
 }
 
+
+/**
+ * @brief Handles the "try" command.
+ *
+ * Sends the "TRY" command to the Game Server with the player's 4-color guess.
+ * Receives and processes the server's response, checking if the guess was 
+ * correct, incorrect, or a duplicate.
+ * 
+ * @param C1 Color 1 of the guess.
+ * @param C2 Color 2 of the guess.
+ * @param C3 Color 3 of the guess.
+ * @param C4 Color 4 of the guess.
+ */
 void handle_try_command(const char *C1, const char *C2, const char *C3, const char *C4) {
     
     if (gamestate == 0) {
@@ -120,12 +174,27 @@ void handle_try_command(const char *C1, const char *C2, const char *C3, const ch
     free(response);
 }
 
+
+/**
+ * @brief Handles the "debug" command sent to the Game Server.
+ *
+ * Sends the "DBG" command to the server to start a new debug game.
+ * This command allows specifying the PLID, time, and secret code.
+ * 
+ * @param PLID The 6-digit Player ID.
+ * @param time The maximum allowed time for the game (1 to 600 seconds).
+ * @param C1 Color 1 of the secret code.
+ * @param C2 Color 2 of the secret code.
+ * @param C3 Color 3 of the secret code.
+ * @param C4 Color 4 of the secret code.
+ */
 void handle_debug_command(const char *PLID, const char *time, const char *C1, const char *C2, const char *C3, const char *C4) {
     if (!validate_plid(PLID) || !time || !C1 || !C2 || !C3 || !C4) {
         printf("Invalid debug command. Usage: debug PLID time C1 C2 C3 C4\n");
         return;
     }
 
+    // Verifies if there isn't a game in-progress already.
     if (gamestate == 1) {
         printf("[!] You must terminate the game before starting a new one.\n");
         return;
@@ -135,6 +204,7 @@ void handle_debug_command(const char *PLID, const char *time, const char *C1, co
 
     snprintf(buffer, MAX_BUFFER_SIZE, "DBG %s %s %s %s %s %s\n", PLID, time, C1, C2, C3, C4);
     sendto(fd, buffer, strlen(buffer), 0, res->ai_addr, res->ai_addrlen);
+
     char* response = receive_udp_response();
     if (!response) {
         printf("[!] No response from server.\n");
@@ -158,6 +228,15 @@ void handle_debug_command(const char *PLID, const char *time, const char *C1, co
     free(response);
 }
 
+
+/**
+ * @brief Handles the "quit" command to end an active game.
+ *
+ * Sends the "QUT" command to the Game Server to terminate an active game
+ * associated with the provided PLID. Processes the server's response.
+ * 
+ * @param PLID The 6-digit Player ID for the active game to be quit.
+ */
 void handle_quit_command() {
     snprintf(buffer, MAX_BUFFER_SIZE, "QUT %s\n", currentPLID);
     printf("(->) Sending: %s", buffer);
@@ -186,6 +265,15 @@ void handle_quit_command() {
     free(response);
 }
 
+/**
+ * @brief Handles the "show_trials" command to request the player's trial history.
+ *
+ * Sends the "STR" command to the Game Server using a TCP connection. 
+ * Receives and saves the trial history file from the server. Prints 
+ * the file contents to the player's terminal.
+ * 
+ * @param PLID The 6-digit Player ID whose trials are being requested.
+ */
 void handle_show_trials_command(const char *GSIP, const char *GSPort) {
     
     int tcp_fd;
@@ -194,6 +282,7 @@ void handle_show_trials_command(const char *GSIP, const char *GSPort) {
     char status[4], fname[64];
     long fsize = 0;
 
+    // Estabilishes TCP connection
     memset(&thints, 0, sizeof(thints));
     thints.ai_family = AF_INET;
     thints.ai_socktype = SOCK_STREAM;
@@ -226,13 +315,11 @@ void handle_show_trials_command(const char *GSIP, const char *GSPort) {
         return;
     }
 
-    // First, read the header line (up to newline)
-    // We'll assume the server sends a newline after the header line.
+    // Receives response. 
+
     int n = 0;
     int total_read = 0;
     memset(tbuffer, 0, sizeof(tbuffer));
-
-    // Read until newline for the header
     while (1) {
         int r = recv(tcp_fd, tbuffer + total_read, 1, 0);
         if (r <= 0) {
@@ -241,29 +328,25 @@ void handle_show_trials_command(const char *GSIP, const char *GSPort) {
             return;
         }
         if (tbuffer[total_read] == '\n') {
-            tbuffer[total_read] = '\0'; // Replace newline with terminator
+            tbuffer[total_read] = '\0'; 
             break;
         }
         total_read++;
         if (total_read >= (int)sizeof(tbuffer)-1) {
-            // Header line too long, protocol error
-            printf("[!] Header line too long\n");
             close(tcp_fd);
             return;
         }
     }
 
-    // Now we have something like: "RST ACT filename.txt 1234"
+    // For example when player tries to use show_trials before any game.
     if (sscanf(tbuffer, "RST %3s %63s %ld", status, fname, &fsize) < 2) {
-        // We expect at least status and if status != NOK, we expect fname and fsize
-        printf("[!] Invalid response format from server.\n");
+        printf("[!] Error: show trials not available at this stage.\n");
         close(tcp_fd);
         return;
     }
 
     if (strcmp(status, "NOK") == 0) {
         printf("[!] No game available or error occurred for PLID %s.\n", currentPLID);
-        // No file data expected.
         close(tcp_fd);
         return;
     }
@@ -283,10 +366,11 @@ void handle_show_trials_command(const char *GSIP, const char *GSPort) {
     }
 
     long bytes_received = 0;
-    // Now read exactly fsize bytes
+    printf("=========================\n[+] Past trials:\n");
     while (bytes_received < fsize) {
         int to_read = (fsize - bytes_received) < MAX_BUFFER_SIZE ? (int)(fsize - bytes_received) : MAX_BUFFER_SIZE;
         n = recv(tcp_fd, tbuffer, to_read, 0);
+        printf("%s\n", tbuffer);
         if (n <= 0) {
             perror("Failed to receive file data");
             fclose(file);
@@ -296,28 +380,33 @@ void handle_show_trials_command(const char *GSIP, const char *GSPort) {
         fwrite(tbuffer, 1, n, file);
         bytes_received += n;
     }
+    printf("=========================\n");
+
 
     fclose(file);
     close(tcp_fd);
 
     printf("[+] Received file '%s' (%ld bytes) from server.\n", fname, fsize);
-    printf("[+] File '%s' saved successfully.\n", fname);
 
     if (strcmp(status, "FIN") == 0) {
-        // Game finished
         printf("[+] This game is finished. You can start a new game.\n");
-        reset_player();
+        reset_player(); // This ensures we reset the player in case 
+                        // the game timeouted after using show_trial.
     } else {
-        // ACT means ongoing game
         printf("[+] Ongoing game summary received. You may continue playing.\n");
     }
 }
 
-void handle_scoreboard_command(const char *GSIP, const char *GSPort) {
-    // Since scoreboard does not depend on an active game, no need to check currentPLID
-    // But if needed, you could check something like:
-    // However, the specification does not require a game to be active for scoreboard.
 
+/**
+ * @brief Handles the "scoreboard" command to request the game scoreboard.
+ *
+ * Sends the "SSB" command to the Game Server using a TCP connection. 
+ * Receives and saves the scoreboard file from the server. Prints 
+ * the file contents to the player's terminal.
+ */
+void handle_scoreboard_command(const char *GSIP, const char *GSPort) {
+    
     int tcp_fd;
     struct addrinfo thints, *tres;
     char tbuffer[MAX_BUFFER_SIZE];
@@ -325,6 +414,8 @@ void handle_scoreboard_command(const char *GSIP, const char *GSPort) {
     char status[6];  // Enough for "EMPTY" or "OK"
     char fname[64];
     long fsize = 0;
+
+    // Estabilishes a TCP connection with the server
 
     memset(&thints, 0, sizeof(thints));
     thints.ai_family = AF_INET;
@@ -351,7 +442,7 @@ void handle_scoreboard_command(const char *GSIP, const char *GSPort) {
 
     freeaddrinfo(tres);
 
-    // Send "SSB\n"
+    // Sends request
     snprintf(tbuffer, MAX_BUFFER_SIZE, "SSB\n");
     if (send(tcp_fd, tbuffer, strlen(tbuffer), 0) == -1) {
         perror("Failed to send SSB command");
@@ -359,7 +450,7 @@ void handle_scoreboard_command(const char *GSIP, const char *GSPort) {
         return;
     }
 
-    // Read header line until newline
+    // Read response
     int total_read = 0;
     memset(tbuffer, 0, sizeof(tbuffer));
 
@@ -376,7 +467,6 @@ void handle_scoreboard_command(const char *GSIP, const char *GSPort) {
         }
         total_read++;
         if (total_read >= (int)sizeof(tbuffer)-1) {
-            printf("[!] Header line too long\n");
             close(tcp_fd);
             return;
         }
@@ -390,12 +480,12 @@ void handle_scoreboard_command(const char *GSIP, const char *GSPort) {
         return;
     } else if (strcmp(status, "OK") == 0) {
         if (fields < 3) {
-            printf("[!] Invalid response format from server (OK but no fname/fsize).\n");
+            printf("[!] Invalid response format from server.\n");
             close(tcp_fd);
             return;
         }
 
-        // Read exactly fsize bytes of file data
+        // Processes the file.
         FILE *file = fopen(fname, "wb");
         if (!file) {
             perror("Failed to open local file for writing");
@@ -423,33 +513,42 @@ void handle_scoreboard_command(const char *GSIP, const char *GSPort) {
         printf("[+] Received scoreboard file '%s' (%ld bytes) from server.\n", fname, fsize);
         printf("[+] File '%s' saved successfully.\n", fname);
 
-        // Now display the scores from the file
         FILE *read_file = fopen(fname, "r");
         if (!read_file) {
             perror("Failed to open scoreboard file for reading");
             return;
         }
 
-        printf("Top-10 Scores:\n");
-        // Each line: PLID secret_key total_plays
+        // Displays the information to the player.
+        printf("=========================\n");
+        printf("[+] Top 10 Scores:\n");
         while (fgets(tbuffer, sizeof(tbuffer), read_file)) {
             printf("%s", tbuffer);
         }
-
+        printf("=========================\n");
         fclose(read_file);
 
     } else {
-        // Unknown status
-        printf("[!] Unrecognized status: %s\n", status);
+        printf("[!] Error: %s\n", status);
         close(tcp_fd);
     }
 }
 
+
+/**
+ * @brief Main function of the Player application.
+ *
+ * Initializes the player's UDP connection to the Game Server (GS) and
+ * processes commands.
+ * 
+ * @param argc Number of command-line arguments.
+ * @param argv Command-line arguments.
+ * @return int Returns 0 on successful exit, non-zero on error.
+ */
 int main(int argc, char *argv[]) {
     char GSIP[256] = DEFAULT_IP;
     char GSPort[16] = DEFAULT_PORT;
 
-    // Parse command-line arguments for IP and Port
     for(int i = 1; i < argc; i++) {
         if(strcmp(argv[i], "-n") == 0) {
             if (i+1 < argc) {
@@ -555,6 +654,15 @@ int main(int argc, char *argv[]) {
     close(fd);
     return 0;
 }
+
+/**
+ * @brief Receives a UDP response from the Game Server.
+ *
+ * Receives a response message from the Game Server using the UDP connection.
+ * The function waits for a response and applies a timeout to prevent blocking.
+ * 
+ * @return char* Response of the server.
+ */
 
 char* receive_udp_response() {
     struct sockaddr_in server_addr;

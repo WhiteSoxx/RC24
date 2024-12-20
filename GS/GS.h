@@ -9,6 +9,7 @@
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <dirent.h>
+#include "../common.h"
 
 
 #define WIN "W"
@@ -35,7 +36,7 @@ typedef struct PlayerGame {
 } PlayerGame;
 
 void handle_udp_commands();
-void handle_tcp_connection(int client_fd);
+void handle_tcp_connection(int client_fd, struct sockaddr_in *client_addr);
 void generate_secret_key(char *secret_key);
 PlayerGame *find_or_create_game(const char *PLID, const char *time_str, const char *mode);
 PlayerGame *get_game(const char *PLID);

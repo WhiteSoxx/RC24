@@ -155,11 +155,7 @@ void update_game_file(const char *PLID, const char *guess, int time_elapsed, int
     fclose(file);
 }
 
-// Checks and updates the time.
-// If time up:
-//  - If TRY: send RTR ETM ... and remove game
-//  - Otherwise: just remove game, no response
-// Returns: -1 time up, 0 no ongoing game, 1 ongoing and updated
+
 int check_and_update_game_time(const char *PLID, struct sockaddr_in *addr, int client_fd, int is_udp, const char *command_type) {
     PlayerGame *game = get_game(PLID);
     if (!game) {
@@ -221,6 +217,36 @@ void process_start_command(struct sockaddr_in *addr) {
     }
 }
 
+int check_for_duplicate_trial(const char *PLID, const char *C1, const char *C2, const char *C3, const char *C4) {
+    char filename[64];
+    snprintf(filename, sizeof(filename), "GAMES/%s.txt", PLID);
+
+    FILE *file = fopen(filename, "r");
+    if (!file) {
+        perror("Failed to open game file for duplicate check");
+        return 0;
+    }
+
+    char line[MAX_BUFFER_SIZE];
+    char player_guess[5];
+    snprintf(player_guess, sizeof(player_guess), "%s%s%s%s", C1, C2, C3, C4);
+
+    while (fgets(line, sizeof(line), file)) {
+        if (strncmp(line, "T: ", 3) == 0) {
+            char trial_guess[5];
+            sscanf(line, "T: %4s", trial_guess);
+
+            if (strcmp(trial_guess, player_guess) == 0) {
+                fclose(file);
+                return 1; // The player's guess is a duplicate
+            }
+        }
+    }
+
+    fclose(file);
+    return 0; // No duplicates found
+}
+
 void process_try_command(struct sockaddr_in *addr) {
     char PLID[7], C1[2], C2[2], C3[2], C4[2];
     int nT;
@@ -258,7 +284,7 @@ void process_try_command(struct sockaddr_in *addr) {
 
     char guess[COLOR_SEQUENCE_LEN + 1] = {C1[0], C2[0], C3[0], C4[0], '\0'};
 
-    if (game->current_trial > 1 && strcmp(guess, game->last_guess) == 0) {
+    if (check_for_duplicate_trial(PLID, C1, C2, C3, C4)) {
         snprintf(buffer, MAX_BUFFER_SIZE, "RTR DUP\n");
         sendto(udp_fd, buffer, strlen(buffer), 0, (struct sockaddr *)addr, addrlen);
         return;
@@ -434,7 +460,7 @@ void process_scoreboard_command(int client_fd) {
             continue;
         }
 
-        char fullpath[512]; // Increased size to avoid truncation warning
+        char fullpath[512]; 
         snprintf(fullpath, sizeof(fullpath), "SCORES/%s", filelist[i]->d_name);
 
         FILE *f = fopen(fullpath, "r");
@@ -483,7 +509,6 @@ void process_scoreboard_command(int client_fd) {
         return;
     }
 
-    // Print line: SSS PLID secret_key total_plays
     for (int i = 0; i < limit; i++) {
         fprintf(out, "%03d %s %s %d\n", scores[i].SSS, scores[i].PLID, scores[i].secret_key, scores[i].total_plays);
     }
@@ -598,7 +623,7 @@ void handle_udp_commands() {
     }
 }
 
-void handle_tcp_connection(int client_fd) {
+void handle_tcp_connection(int client_fd, struct sockaddr_in *client_addr) {
     char local_buffer[MAX_BUFFER_SIZE];
     int n = recv(client_fd, local_buffer, sizeof(local_buffer), 0);
     if (n <= 0) {
@@ -607,14 +632,15 @@ void handle_tcp_connection(int client_fd) {
     }
 
     local_buffer[n] = '\0';
-    printf("TCP request: %s\n", local_buffer);
-
+    if (verbose) {
+        printf("TCP connection from %s:%d -> %s\n", inet_ntoa(client_addr->sin_addr), ntohs(client_addr->sin_port), local_buffer);
+    }
+    
     strncpy(buffer, local_buffer, MAX_BUFFER_SIZE);
 
     if (strncmp(local_buffer, "STR", 3) == 0) {
         process_show_trials_command(client_fd);
     } else if (strncmp(local_buffer, "SSB", 3) == 0) {
-        // Implement the scoreboard functionality
         process_scoreboard_command(client_fd);
     } else {
         printf("Unknown TCP request\n");
@@ -787,7 +813,7 @@ int main(int argc, char *argv[]) {
                 continue;
             } else if (pid == 0) {
                 close(tcp_fd);
-                handle_tcp_connection(client_fd);
+                handle_tcp_connection(client_fd, &client_addr);
                 close(client_fd);
                 exit(0);
             } else {
