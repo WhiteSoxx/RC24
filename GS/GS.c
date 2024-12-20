@@ -265,6 +265,7 @@ void process_try_command(struct sockaddr_in *addr) {
         return;
     }
 
+    //FIXME remove?
     if (game->current_trial > MAX_TRIALS) {
         char formatted_key[8];
         format_secret_key(formatted_key, game->secret_key);
@@ -291,7 +292,9 @@ void process_try_command(struct sockaddr_in *addr) {
     }
 
     if (game->current_trial >= MAX_TRIALS && nB != 4) {
-        snprintf(buffer, MAX_BUFFER_SIZE, "RTR ENT %s\n", game->secret_key);
+        char formatted_key[8];
+        format_secret_key(formatted_key, game->secret_key);
+        snprintf(buffer, MAX_BUFFER_SIZE, "RTR ENT %s\n", formatted_key);
         sendto(udp_fd, buffer, strlen(buffer), 0, (struct sockaddr *)addr, addrlen);
         remove_game(PLID, FAIL);
     } else {
@@ -432,7 +435,7 @@ void send_file_to_client(int client_fd, const char *status, const char *filepath
     fname = fname ? fname + 1 : (char *)filepath;
 
     char header[MAX_BUFFER_SIZE];
-    snprintf(header, sizeof(header), "RST %s %s %ld\n", status, fname, filesize);
+    snprintf(header, sizeof(header), "RST %s %s %ld ", status, fname, filesize);
     send(client_fd, header, strlen(header), 0);
 
     char file_buffer[MAX_BUFFER_SIZE];
@@ -440,6 +443,7 @@ void send_file_to_client(int client_fd, const char *status, const char *filepath
     while ((nread = fread(file_buffer, 1, sizeof(file_buffer), file)) > 0) {
         send(client_fd, file_buffer, nread, 0);
     }
+    send(client_fd, "\n", 1, 0);
 
     fclose(file);
 }
@@ -488,7 +492,7 @@ void process_scoreboard_command(int client_fd) {
     rewind(file);
 
     char header[MAX_BUFFER_SIZE];
-    snprintf(header, sizeof(header), "RSS OK %s %ld\n", "scoreboard.txt", filesize);
+    snprintf(header, sizeof(header), "RSS OK %s %ld ", "scoreboard.txt", filesize);
     send(client_fd, header, strlen(header), 0);
 
     char file_buffer[MAX_BUFFER_SIZE];
@@ -496,6 +500,7 @@ void process_scoreboard_command(int client_fd) {
     while ((nread = fread(file_buffer, 1, sizeof(file_buffer), file)) > 0) {
         send(client_fd, file_buffer, nread, 0);
     }
+    send(client_fd, "\n", 1, 0);
 
     fclose(file);
 }

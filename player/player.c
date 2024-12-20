@@ -360,7 +360,7 @@ void handle_show_trials_command(const char *GSIP, const char *GSPort) {
         }
     }
 
-    if (sscanf(tbuffer, "RST %3s %63s %ld", status, fname, &fsize) < 2) {
+    if (sscanf(tbuffer, "RST %3s %63s %ld ", status, fname, &fsize) < 2) {
         printf("[!] Error: show trials not available at this stage.\n");
         close(tcp_fd);
         return;
@@ -500,7 +500,7 @@ void handle_scoreboard_command(const char *GSIP, const char *GSPort) {
         close(tcp_fd);
         return;
     } else if (strcmp(status, "OK") == 0) {
-        if (fields < 3) {
+        if (fields < 3 || ) {
             printf("[!] Invalid response format from server.\n");
             close(tcp_fd);
             return;
@@ -517,6 +517,7 @@ void handle_scoreboard_command(const char *GSIP, const char *GSPort) {
         while (bytes_received < fsize) {
             int to_read = (fsize - bytes_received) < MAX_BUFFER_SIZE ? (int)(fsize - bytes_received) : MAX_BUFFER_SIZE;
             int n = recv(tcp_fd, tbuffer, to_read, 0);
+            int n = fread(tbuffer, 1, sizeof(tbuffer), file);
             if (n <= 0) {
                 perror("Failed to receive scoreboard file data");
                 fclose(file);
