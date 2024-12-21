@@ -156,12 +156,7 @@ ScoreEntry* load_scores(int *count) {
                 strncpy(entry->PLID, PLID, 6); entry->PLID[6] = '\0';
                 strncpy(entry->secret_key, CCCC, 4); entry->secret_key[4] = '\0';
                 entry->total_plays = N;
-                if(!strcmp(mode, "D")) {
-                    strcpy(entry->mode, "DEBUG");
-                }
-                else {
-                    strcpy(entry->mode, "PLAY");
-                }
+                strcpy(entry->mode, mode);
 
             }
         }

@@ -373,6 +373,8 @@ void process_try_command(struct sockaddr_in *addr) {
     }
 
     if (game->current_trial >= MAX_TRIALS && nB != 4) {
+        update_game_file(PLID, guess, game->elapsed_time, nB, nW);
+
         char formatted_key[8];
         format_secret_key(formatted_key, game->secret_key);
         snprintf(buffer, MAX_BUFFER_SIZE, "RTR ENT %s\n", formatted_key);
